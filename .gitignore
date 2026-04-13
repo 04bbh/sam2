@@ -1,0 +1,13 @@
+*.jpg
+*.png
+*.pt
+/checkpoints
+/logs
+/outputs
+/Qwen3-VL-8B-Instruct
+/sht_json
+/test_videos
+/tracks
+*.whl
+*.pyc
+__pycache__

@@ -1,0 +1,8 @@
+colorama
+dashscope
+ffmpeg-python
+joblib
+loguru
+matplotlib
+numpy
+python-dotenv

@@ -1,0 +1,25 @@
+qwen:
+  model_path: "Qwen3-VL-8B-Instruct"
+  target_desc: "追逐，打斗，奔跑，骑自行车，骑摩托车，滑滑板，机动车，跳跃，抢夺，摔倒，推车，挥舞物品"
+  # "追逐，打斗，奔跑，骑自行车，骑摩托车，滑滑板，驾驶机动车，跳跃，投掷，抢夺，摔倒，推车，挥舞物品，翻越"
+  max_new_tokens: 256
+
+sam2:
+  model_cfg: "configs/sam2.1/sam2.1_hiera_l.yaml"
+  checkpoint: "./checkpoints/sam2.1_hiera_large.pt"
+  multimask_output: false
+
+selector:
+  alpha: 0.5
+  beta: 0.5
+
+pipeline:
+  batch_size: 2
+  queue_size: 32
+
+data:
+  videos_root: "/data/users/wjq/datasets/shanghaitech/testing/frames"
+  # "/data/users/wjq/datasets/shanghaitech/testing/frames"
+  output_root: "./outputs"
+  track_txt_root: "./tracks"
+  ann_obj_id: 1
