@@ -1,6 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional
-from typing import Dict
+from typing import Dict, List, Sequence
 import cv2
 import numpy as np
 
@@ -40,43 +39,84 @@ class SegmenterAndTracker:
         self.multimask_output = multimask_output
 
     def segment(self, det: DetectionResult) -> SegmentationResult:
-        image_bgr = cv2.imread(det.frame_path)
-        if image_bgr is None:
-            raise FileNotFoundError(f"无法读取图像: {det.frame_path}")
-        image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-        h, w = image_rgb.shape[:2]
+        return self.segment_many([det])[0]
 
-        # 约定：box 全 0 表示目标不存在，直接给 iou=0、空 mask
-        if np.allclose(det.box_xyxy, np.zeros(4, dtype=np.float32)):
-            empty_mask = np.zeros((h, w), dtype=np.uint8)
-            return SegmentationResult(
-                frame_idx=det.frame_idx,
-                frame_path=det.frame_path,
-                box_xyxy=det.box_xyxy,
-                confidence=det.confidence,
-                iou_score=0.0,
-                mask=empty_mask,
-            )
+    @staticmethod
+    def _is_empty_box(box_xyxy: np.ndarray) -> bool:
+        return np.allclose(box_xyxy, np.zeros(4, dtype=np.float32))
 
-        self.image_predictor.set_image(image_rgb)
-
-        masks, iou_preds, _ = self.image_predictor.predict(
-            box=det.box_xyxy,
-            multimask_output=self.multimask_output,
-        )
-
-        best_idx = int(np.argmax(iou_preds))
-        best_iou = float(iou_preds[best_idx])
-        best_mask = masks[best_idx] > 0.0
-
+    @staticmethod
+    def _empty_result(det: DetectionResult, height: int, width: int) -> SegmentationResult:
         return SegmentationResult(
             frame_idx=det.frame_idx,
             frame_path=det.frame_path,
             box_xyxy=det.box_xyxy,
             confidence=det.confidence,
-            iou_score=best_iou,
-            mask=best_mask.astype(np.uint8),
+            iou_score=0.0,
+            mask=np.zeros((height, width), dtype=np.uint8),
         )
+
+    @staticmethod
+    def _pick_best_masks(masks: np.ndarray, iou_preds: np.ndarray) -> List[tuple[np.ndarray, float]]:
+        if masks.ndim == 3:
+            masks = masks[None, ...]
+        if iou_preds.ndim == 1:
+            iou_preds = iou_preds[None, ...]
+
+        best: List[tuple[np.ndarray, float]] = []
+        for det_masks, det_ious in zip(masks, iou_preds):
+            best_idx = int(np.argmax(det_ious))
+            best.append(((det_masks[best_idx] > 0.0).astype(np.uint8), float(det_ious[best_idx])))
+        return best
+
+    def segment_many(self, detections: Sequence[DetectionResult]) -> List[SegmentationResult]:
+        if not detections:
+            return []
+
+        results: List[SegmentationResult | None] = [None] * len(detections)
+        grouped: Dict[str, List[tuple[int, DetectionResult]]] = {}
+        for output_idx, det in enumerate(detections):
+            grouped.setdefault(det.frame_path, []).append((output_idx, det))
+
+        for frame_path, frame_detections in grouped.items():
+            image_bgr = cv2.imread(frame_path)
+            if image_bgr is None:
+                raise FileNotFoundError(f"无法读取图像: {frame_path}")
+            image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+            h, w = image_rgb.shape[:2]
+
+            valid_items = []
+            for output_idx, det in frame_detections:
+                if self._is_empty_box(det.box_xyxy):
+                    results[output_idx] = self._empty_result(det, h, w)
+                else:
+                    valid_items.append((output_idx, det))
+
+            if not valid_items:
+                continue
+
+            boxes = np.stack([det.box_xyxy for _, det in valid_items]).astype(np.float32)
+            self.image_predictor.set_image(image_rgb)
+
+            masks, iou_preds, _ = self.image_predictor.predict(
+                box=boxes,
+                multimask_output=self.multimask_output,
+            )
+
+            for (output_idx, det), (best_mask, best_iou) in zip(
+                valid_items,
+                self._pick_best_masks(masks, iou_preds),
+            ):
+                results[output_idx] = SegmentationResult(
+                    frame_idx=det.frame_idx,
+                    frame_path=det.frame_path,
+                    box_xyxy=det.box_xyxy,
+                    confidence=det.confidence,
+                    iou_score=best_iou,
+                    mask=best_mask,
+                )
+
+        return [res for res in results if res is not None]
 
     def track_from_mask(
         self,
@@ -85,14 +125,34 @@ class SegmenterAndTracker:
         ann_obj_id: int,
         mask: np.ndarray,
     ) -> Dict[int, Dict[int, np.ndarray]]:
+        return self.track_from_masks(
+            video_dir=video_dir,
+            ann_frame_idx=ann_frame_idx,
+            obj_ids=[ann_obj_id],
+            masks=[mask],
+        )
+
+    def track_from_masks(
+        self,
+        video_dir: str,
+        ann_frame_idx: int,
+        obj_ids: Sequence[int],
+        masks: Sequence[np.ndarray],
+    ) -> Dict[int, Dict[int, np.ndarray]]:
+        if len(obj_ids) != len(masks):
+            raise ValueError("obj_ids 与 masks 长度不一致")
+        if not masks:
+            return {}
+
         state = self.video_predictor.init_state(video_path=video_dir)
 
-        self.video_predictor.add_new_mask(
-            inference_state=state,
-            frame_idx=ann_frame_idx,
-            obj_id=ann_obj_id,
-            mask=mask,
-        )
+        for obj_id, mask in zip(obj_ids, masks):
+            self.video_predictor.add_new_mask(
+                inference_state=state,
+                frame_idx=ann_frame_idx,
+                obj_id=int(obj_id),
+                mask=mask,
+            )
 
         video_segments: Dict[int, Dict[int, np.ndarray]] = {}
         num_frames = state["num_frames"]
