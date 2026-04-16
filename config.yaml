@@ -1,6 +1,9 @@
 qwen:
   model_path: "Qwen3-VL-8B-Instruct"
-  target_desc: "追逐，打斗，奔跑，骑自行车，骑摩托车，滑滑板，驾驶机动车，跳跃，抢夺，推车，挥舞物品，翻越栏杆"
+  target_desc: "打斗，骑自行车，骑摩托车，机动车，跳跃，抢夺，小推车，翻越栏杆，摔倒，滑滑板，追逐，奔跑，挥舞物品"
+
+  # "追逐，打斗，奔跑，骑自行车，骑摩托车，滑滑板，驾驶机动车，跳跃，抢夺，推车，挥舞物品，翻越栏杆"
+  # "打斗，骑自行车，骑摩托车，机动车，跳跃，抢夺，小推车，翻越栏杆，摔倒，向上抛掷物品，滑滑板的人"
     # 类别结构如下：
     # - 目标类别：类别名称
     # - 正向定义：属于该类别的描述
@@ -67,8 +70,8 @@ qwen:
     #     逆向定义：正常经过、站在栏杆旁或手扶栏杆但未翻越。
     #     定位要求：应框出翻越的人，并可包含其接触的栏杆区域。
 
-  # "追逐，打斗，奔跑，骑自行车，骑摩托车，滑滑板，驾驶机动车，跳跃，投掷，抢夺，摔倒，推车，挥舞物品，翻越"
-  max_new_tokens: 512
+  # "追逐，打斗，奔跑，骑自行车，骑摩托车，滑滑板，机动车，跳跃，投掷，抢夺，摔倒，推车，挥舞物品，翻越"
+  max_new_tokens: 256
   use_two_stage: false
   stage1_max_new_tokens: 128
 
@@ -88,18 +91,21 @@ selector:
   merge_iou_thresh: 0.8
 
 candidate_selector:
-  high_ratio: 1.0
-  mid_ratio: 0.5
-  low_ratio: 0.05
+  high_ratio: 0.8
+  mid_ratio: 0.2
+  low_ratio: 0.1
   uniform_interval: 0
 
 pipeline:
   batch_size: 4
   queue_size: 32
+  visualize_detector_stage2: true
 
 data:
   videos_root: "/data/users/wjq/datasets/shanghaitech/testing/frames"
   # "/data/users/wjq/datasets/shanghaitech/testing/frames"
   output_root: "./outputs/4"
   track_txt_root: "./tracks/4"
+  detector_stage2_vis_root: "./outputs/detector_stage2_vis_chaserunmove_1"
+  detector_stage2_json_root: "./output_json_detector/detector_stage2_json_chaserunmove_1"
   ann_obj_id: 1

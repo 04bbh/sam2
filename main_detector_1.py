@@ -5,7 +5,7 @@ import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "2,3,0,1"
 
 from dataclasses import dataclass
-from typing import List
+from typing import Dict, List
 
 import torch
 import numpy as np
@@ -15,7 +15,7 @@ from utils.mask_to_box_track import save_video_track_txt
 from src.detector import QwenVLDetector
 from src.segmenter_and_tracker import SegmenterAndTracker
 from src.selector import FrameSelector
-from utils.visualization import save_tracking_results
+from utils.visualization import save_detection_results, save_tracking_results
 
 
 
@@ -161,6 +161,41 @@ def merge_video_segments(target: dict, source: dict, iou_thresh: float = 0.8) ->
         target[frame_idx] = {obj_id: mask for obj_id, mask in kept}
 
 
+def save_detector_json(
+    det_results: List,
+    json_path: str,
+    target_desc: str,
+) -> None:
+    grouped: Dict[int, dict] = {}
+    for det in det_results:
+        frame_item = grouped.setdefault(
+            det.frame_idx,
+            {
+                "frame_id": int(det.frame_idx),
+                "target_desc": target_desc,
+                "detections": [],
+            },
+        )
+
+        box = np.asarray(det.box_xyxy, dtype=float).tolist()
+        is_empty = det.confidence <= 0 and not det.category and np.allclose(det.box_xyxy, 0)
+        if is_empty:
+            continue
+
+        frame_item["detections"].append(
+            {
+                "category": det.category,
+                "box": [float(x) for x in box],
+                "confidence": float(det.confidence),
+            }
+        )
+
+    data = [grouped[frame_idx] for frame_idx in sorted(grouped)]
+    os.makedirs(os.path.dirname(json_path), exist_ok=True)
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
 def run_single_video(
     detector: QwenVLDetector,
     segmenter_and_tracker: SegmenterAndTracker,
@@ -217,6 +252,18 @@ def run_single_video(
     seg_results = []
     det_count = 0
     stage2_target_desc = None if detector.use_two_stage else cfg["qwen"]["target_desc"]
+    visualize_stage2 = cfg.get("pipeline", {}).get("visualize_detector_stage2", True)
+    detector_stage2_vis_root = cfg.get("data", {}).get(
+        "detector_stage2_vis_root",
+        "./outputs/detector_stage2_vis",
+    )
+    detector_stage2_vis_dir = os.path.join(detector_stage2_vis_root, task.video_path)
+    detector_stage2_json_root = cfg.get("data", {}).get(
+        "detector_stage2_json_root",
+        "./outputs/detector_stage2_json",
+    )
+    detector_stage2_json_path = os.path.join(detector_stage2_json_root, task.video_path + ".json")
+    all_det_results = []
 
     if detector.use_two_stage:
         stage1_paths = [frame_paths[i] for i in candidate_indices]
@@ -232,16 +279,26 @@ def run_single_video(
         stage2_target_desc = "，".join(categories)
         print(f"[Stage1] video={task.video_path} categories={categories} reasons={stage1_items}")
 
-       
     for st in range(0, len(candidate_indices), batch_size):
         batch_indices = candidate_indices[st: st + batch_size]
         batch_paths = [frame_paths[i] for i in batch_indices]
         det_batch = detector.infer_batch(batch_paths, batch_indices, target_desc=stage2_target_desc)
+        all_det_results.extend(det_batch)
         det_count += len(det_batch)
-        log_file.write(str(det_batch))
-        log_file.write('\n')
-    
-        seg_results.extend(segmenter_and_tracker.segment_many(det_batch))
+        if log_file is not None:
+            log_file.write(str(det_batch))
+            log_file.write('\n')
+        if visualize_stage2:
+            save_detection_results(det_batch, detector_stage2_vis_dir)
+
+        # seg_results.extend(segmenter_and_tracker.segment_many(det_batch))
+
+    save_detector_json(
+        det_results=all_det_results,
+        json_path=detector_stage2_json_path,
+        target_desc=stage2_target_desc or "",
+    )
+    print(f"[Done] 检测 JSON: {detector_stage2_json_path}")
 
     # if not seg_results:
     #     print(f"[Skip] 未得到可用分割结果: {task.video_path}")
@@ -316,7 +373,7 @@ def run_single_video(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config.yaml", type=str)
-    parser.add_argument("--input_json", default="sht_json/input_datas_sht_original_scaled.json", type=str)
+    parser.add_argument("--input_json", default="sht_json/input_datas_sht_original_scaled_chaserunmove.json", type=str)
     args = parser.parse_args()
 
     cfg = load_cfg(args.config)

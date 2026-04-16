@@ -16,6 +16,7 @@ class DetectionResult:
     frame_path: str
     box_xyxy: np.ndarray
     confidence: float
+    category: str = ""
 
 
 class QwenVLDetector:
@@ -80,40 +81,48 @@ class QwenVLDetector:
         你是一个高精度的视觉目标检测系统，需要对多张来自同一视频的图像进行目标定位。
 
         # Task
-        给定 {batch_size} 张图像，请在每张图像中检测Detection Categories中定义的目标，并输出对应的边界框（box）和置信度（confidence）。
-
+        给定 {batch_size} 张图像，请分别在每张图像中检测"Detection Categories"中定义的目标，并输出对应"category"的"box"和"box confidence"。若图像中不存在任何定义的目标，则输出空数组 []。
+        ## category
+        指目标的类别名称。必须是"Detection Categories"包含的目标类别。
+        ## box
+        指目标的空间位置坐标。坐标使用 0-1000 的标准化整数，顺序为[x_min,y_min,x_max,y_max]。
+        ## box confidence
+        指box的可信度评分，范围为 0.0-1.0，越高表示box越可信。
+        0.8-1.0：目标类别的关键视觉证据清晰完整
+        0.0-0.8：存在相似性但关键证据不足
+        
+        
         # Detection Categories
         {target_desc}
-
+        
         # Detection Rules
-        1. 每张图像独立检测，但应参考其他图像。
-        2. 对于多人交互（如打斗、追逐），需分别检测每个参与者。
+        * 对于"滑滑板"类别，必须同时满足：
+           - 画面中清楚可见滑板、滑板车、踏板车或轮滑鞋等滑行工具；
+           - 工具与人的脚部/身体有明确使用关系。
+           普通走路、跑步、脚步模糊、鞋子阴影、腿部姿态像滑行但看不到工具，都不是"滑滑板"，必须输出 []。
+        * 对于"挥舞物品"类别，必须同时满足：
+           - 手中清楚可见一个具体工具，且高举挥舞；
+           空手挥手、打招呼、正常抬手、正常手持雨伞，都不是"挥舞物品"，必须输出 []。
+    
+
+        # Output Rules
+        * 每个图像中最多检测2个目标，每个目标的输出包含"category"、"box"、"box confidence"。
+        * 若图像中不存在任何目标，则输出空数组 []。
+        * 必须包含 image_id 从 0 到 {batch_size}-1 的所有项
   
-        # Box Rules
-        坐标使用 0-1000 的标准化整数，顺序为[x_min,y_min,x_max,y_max]。
-
-        # Confidence Rules
-        1. 置信度范围：0.0–1.0
-        2. 评分依据：
-        - 0.8-1.0：存在Detection Categories中定义的目标，且目标清晰、完整、特征明显
-        - 0.5–0.8：存在Detection Categories中定义的目标，但有遮挡或模糊
-        - 0.2-0.5：不确定是否存在Detection Categories中定义的目标
-        - 0.0-0.2：不存在Detection Categories中定义的类别
-
         # Output Format
         严格输出 JSON 数组，不包含任何解释或额外文本：
-
         [
         {{
             "image_id": 0,
             "detections": [
                 {{
-                    "name": "类别名称",
+                    "category": "类别名称",
                     "box": [xmin, ymin, xmax, ymax],
                     "confidence": 0.92
                 }},
                 {{
-                    "name": "类别名称",
+                    "category": "类别名称",
                     "box": [xmin, ymin, xmax, ymax],
                     "confidence": 0.88
                 }}
@@ -123,21 +132,21 @@ class QwenVLDetector:
             "image_id": 1,
             "detections": [
                 {{
-                    "name": "类别名称",
+                    "category": "类别名称",
                     "box": [xmin, ymin, xmax, ymax],
                     "confidence": 0.6
                 }}
             ]
         }},
+        {{
+            "image_id": 2,
+            "detections": []
+        }},
         ...
         ]
         
-        # Output Constraints
-        1. 必须包含 image_id 从 0 到 {batch_size}-1 的所有项
-        2. 每个 detection 必须包含 name、box、confidence
-        3. 若无目标，输出 "detections": []
-        
         """
+        # * 总体原则：宁可漏检，也不要把相似但不满足定义的普通行为输出为目标类别
         #请分别分析输入的 {batch_size} 张图像，并定位其中包含的指定目标实例（box），同时给出相应的置信度分数（confidence）。
         # 置信度评分规则：
         # - 0.8-1.0：符合定义的目标存在，且清晰完整。
@@ -186,7 +195,15 @@ class QwenVLDetector:
         # 3. 交互事件处理：对于打斗、追逐、抢夺等多人交互事件，应分别对多个参与者进行定位。
         # 4. 无目标处理：如果图中没有任何指定目标，"detections" 输出空数组 []。
         # 5. 完整性：必须包含从 image_id 0 到 {batch_size}-1 的所有图像条目，不得遗漏。
-        
+
+        #  # Confidence Rules
+        # 1. 置信度范围：0.0–1.0
+        # 2. 评分依据：
+        # - 0.8-1.0：存在Detection Categories中定义的目标，且目标清晰、完整、特征明显
+        # - 0.5–0.8：存在Detection Categories中定义的目标，但有遮挡或模糊
+        # - 0.2-0.5：不确定是否存在Detection Categories中定义的目标
+        # - 0.0-0.2：不存在Detection Categories中定义的类别
+
         return user_prompt.format(batch_size=batch_size, target_desc=target_desc)
 
     def _build_stage1_prompt(self, batch_size: int) -> str:
@@ -483,6 +500,13 @@ class QwenVLDetector:
         conf = max(0.0, min(1.0, conf))
         return box_arr, conf
 
+    @staticmethod
+    def _parse_category(det: dict) -> str:
+        category = det.get("category", det.get("name", ""))
+        if not isinstance(category, str):
+            return ""
+        return category.strip()
+
     def _parse_multi_json_output(self, text, paths, indices, pil_images) -> List[DetectionResult]:
         results = []
         data_list = self._load_json_array(text)
@@ -506,16 +530,19 @@ class QwenVLDetector:
                     frame_path=paths[i],
                     box_xyxy=np.zeros(4, dtype=np.float32),
                     confidence=0.0,
+                    category="",
                 ))
                 continue
 
             for det in detections:
                 box_1000, conf = self._parse_box_and_conf(det)
+                category = self._parse_category(det)
                 box_xyxy = self._denorm_xyxy(box_1000, w, h)
                 results.append(DetectionResult(
                     frame_idx=indices[i],
                     frame_path=paths[i],
                     box_xyxy=box_xyxy,
                     confidence=conf,
+                    category=category,
                 ))
         return results

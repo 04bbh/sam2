@@ -5,9 +5,11 @@
 /logs
 /outputs
 /Qwen3-VL-8B-Instruct
+/gemma-4-26B-A4B-it
 /sht_json
 /test_videos
 /tracks
+/output_json_detector
 *.whl
 *.pyc
 __pycache__
