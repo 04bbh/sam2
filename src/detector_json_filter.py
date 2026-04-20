@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import math
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -108,6 +109,61 @@ def pick_category_representatives(
     return result
 
 
+def pick_category_multi_best(
+    blocks: list[dict[str, Any]],
+    min_count: int,
+) -> list[dict[str, Any]]:
+    grouped: dict[str, list[tuple[dict[str, Any], dict[str, Any], int]]] = defaultdict(list)
+
+    for block_index, block in enumerate(blocks):
+        detections = block.get("detections", [])
+        if not isinstance(detections, list):
+            continue
+        for detection in detections:
+            if not isinstance(detection, dict):
+                continue
+            category = detection.get("category")
+            if category is None:
+                continue
+            category_name = str(category).strip()
+            if not category_name:
+                continue
+            grouped[category_name].append((block, detection, block_index))
+
+    selected_by_block: dict[int, tuple[dict[str, Any], list[dict[str, Any]]]] = {}
+    for items in grouped.values():
+        if len(items) < min_count:
+            continue
+
+        best_confidence = max(confidence_value(detection) for _, detection, _ in items)
+        winners = [
+            (block, detection, block_index)
+            for block, detection, block_index in items
+            if math.isclose(
+                confidence_value(detection),
+                best_confidence,
+                rel_tol=0.0,
+                abs_tol=1e-9,
+            )
+        ]
+
+        for winner_block, winner_detection, winner_block_index in winners:
+            if winner_block_index not in selected_by_block:
+                selected_block = copy.deepcopy(winner_block)
+                selected_block["detections"] = []
+                selected_by_block[winner_block_index] = (selected_block, [])
+
+            selected_by_block[winner_block_index][1].append(copy.deepcopy(winner_detection))
+
+    result: list[dict[str, Any]] = []
+    for block_index in sorted(selected_by_block):
+        selected_block, detections = selected_by_block[block_index]
+        selected_block["detections"] = detections
+        result.append(selected_block)
+
+    return result
+
+
 def filter_json_data(
     data: list[dict[str, Any]],
     threshold: float,
@@ -115,6 +171,15 @@ def filter_json_data(
 ) -> list[dict[str, Any]]:
     confidence_filtered = filter_low_confidence_blocks(data, threshold)
     return pick_category_representatives(confidence_filtered, min_count)
+
+
+def filter_json_data_multi_best(
+    data: list[dict[str, Any]],
+    threshold: float,
+    min_count: int,
+) -> list[dict[str, Any]]:
+    confidence_filtered = filter_low_confidence_blocks(data, threshold)
+    return pick_category_multi_best(confidence_filtered, min_count)
 
 
 def process_detector_json(

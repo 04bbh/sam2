@@ -13,3 +13,4 @@
 *.whl
 *.pyc
 __pycache__
+*.json

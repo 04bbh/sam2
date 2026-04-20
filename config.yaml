@@ -1,6 +1,6 @@
 qwen:
   model_path: "Qwen3-VL-8B-Instruct"
-  target_desc: "打斗，骑自行车，骑摩托车，机动车，跳跃，抢夺，小推车，翻越栏杆，摔倒，滑滑板，追逐，奔跑，挥舞物品"
+  target_desc: "打斗，骑自行车，骑摩托车，机动车，跳跃，抢夺，小推车，翻越栏杆，摔倒，滑滑板，奔跑，挥舞物品"
 
   # "追逐，打斗，奔跑，骑自行车，骑摩托车，滑滑板，驾驶机动车，跳跃，抢夺，推车，挥舞物品，翻越栏杆"
   # "打斗，骑自行车，骑摩托车，机动车，跳跃，抢夺，小推车，翻越栏杆，摔倒，向上抛掷物品，滑滑板的人"
@@ -102,10 +102,11 @@ pipeline:
   visualize_detector_stage2: true
 
 data:
+  dataset_name: "SHT"
   videos_root: "/data/users/wjq/datasets/shanghaitech/testing/frames"
   # "/data/users/wjq/datasets/shanghaitech/testing/frames"
   output_root: "./outputs/4"
   track_txt_root: "./tracks/4"
-  detector_stage2_vis_root: "./outputs/detector_stage2_vis_chaserunmove_1"
-  detector_stage2_json_root: "./output_json_detector/detector_stage2_json_chaserunmove_1"
+  detector_stage2_vis_root: "./outputs/detector_stage2_vis_chaserunmove_delchaseclass"
+  detector_stage2_json_root: "./output_json_detector/detector_stage2_json_chaserunmove_delchaseclass"
   ann_obj_id: 1

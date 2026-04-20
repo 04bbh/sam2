@@ -7,14 +7,14 @@ import argparse
 import json
 import os
 from pathlib import Path
-os.environ["CUDA_VISIBLE_DEVICES"] = "2,3,0,1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1,0,2,3"
 import torch
 import yaml
 
 from src.detector_json_filter import (
     CONFIDENCE_THRESHOLD,
     MIN_CATEGORY_COUNT,
-    filter_json_data,
+    filter_json_data_multi_best,
 )
 from src.json_segmenter_and_tracker import JsonSegmenterAndTracker
 from utils.mask_to_box_track import save_video_track_txt
@@ -40,19 +40,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--input-json-dir",
         type=Path,
-        default="./output_json_detector/detector_stage2_json_chaserunmove_1",
+        default="./output_json_detector/detector_stage2_json_nochaserunmove_addfall_1",
         help="Directory containing detector JSON files. Defaults to data.detector_stage2_json_root.",
     )
     parser.add_argument(
         "--filtered-json-root",
         type=Path,
-        default="${input-json-dir}_filtered2",
+        default="filtered",
         help="Directory for filtered JSON files. Defaults to ${input-json-dir}_filtered2.",
     )
     parser.add_argument(
         "--save-filtered-json",
         action=argparse.BooleanOptionalAction,
-        default=False,
+        default=True,
         help="Save filtered JSON files. Enabled by default.",
     )
     parser.add_argument(
@@ -109,6 +109,26 @@ def count_categories(blocks: list[dict]) -> int:
     return len(categories)
 
 
+def mean_confidence(blocks: list[dict]) -> float:
+    total = 0.0
+    count = 0
+
+    for block in blocks:
+        detections = block.get("detections", [])
+        if not isinstance(detections, list):
+            continue
+        for det in detections:
+            if not isinstance(det, dict):
+                continue
+            try:
+                total += float(det.get("confidence", 0.0))
+            except Exception:
+                total += 0.0
+            count += 1
+
+    return total / count if count > 0 else 0.0
+
+
 def save_filtered_json(blocks: list[dict], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as file:
@@ -139,7 +159,7 @@ def run_single_json(
         return
 
     data = load_detector_json(json_path)
-    filtered_data = filter_json_data(data, threshold=threshold, min_count=min_count)
+    filtered_data = filter_json_data_multi_best(data, threshold=threshold, min_count=min_count)
 
     if save_filtered:
         filtered_path = filtered_json_root / json_path.name
@@ -155,7 +175,7 @@ def run_single_json(
 
     merge_iou_thresh = float(cfg.get("selector", {}).get("merge_iou_thresh", 0.8))
     ann_obj_id = int(cfg["data"].get("ann_obj_id", 1))
-    video_segments = segmenter_and_tracker.segment_and_track_from_json(
+    video_segments = segmenter_and_tracker.segment_and_track_best_iou(
         video_dir=video_dir,
         blocks=filtered_data,
         start_obj_id=ann_obj_id,
@@ -166,13 +186,15 @@ def run_single_json(
         print(f"[Skip] 未得到可用跟踪结果: {video_name}")
         return
 
+    track_score = mean_confidence(filtered_data)
     save_tracking_results(video_dir=video_dir, video_segments=video_segments, out_dir=out_dir)
-    save_video_track_txt(video_segments=video_segments, txt_path=track_txt_path, score=1)
+    save_video_track_txt(video_segments=video_segments, txt_path=track_txt_path, score=track_score)
 
     print(
         f"[Done] video={video_name} raw_blocks={len(data)} "
         f"filtered_blocks={len(filtered_data)} categories={count_categories(filtered_data)} "
-        f"seeds={count_detections(filtered_data)} tracked_frames={len(video_segments)}"
+        f"seeds={count_detections(filtered_data)} tracked_frames={len(video_segments)} "
+        f"score={track_score:.4f}"
     )
     print(f"[Done] 保存结果: {out_dir}")
     print(f"[Done] 轨迹文件: {track_txt_path}")

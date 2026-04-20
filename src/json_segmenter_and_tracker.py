@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List
 
 import numpy as np
 
 from src.detector import DetectionResult
-from src.segmenter_and_tracker import SegmenterAndTracker
+from src.segmenter_and_tracker import SegmentationResult, SegmenterAndTracker
 
 
 def list_frames(video_dir: str) -> List[str]:
@@ -174,6 +174,81 @@ class JsonSegmenterAndTracker(SegmenterAndTracker):
                 iou_thresh=merge_iou_thresh,
             )
             next_obj_id += len(frame_segmentations)
+
+        return video_segments
+
+    def segment_and_track_best_iou(
+        self,
+        video_dir: str,
+        blocks: list[dict[str, Any]],
+        start_obj_id: int,
+        merge_iou_thresh: float,
+    ) -> Dict[int, Dict[int, np.ndarray]]:
+        detections = self.json_blocks_to_detections(video_dir=video_dir, blocks=blocks)
+        if not detections:
+            return {}
+
+        segmentations = self.segment_many(detections)
+        candidates = []
+        for order, (det, seg) in enumerate(zip(detections, segmentations)):
+            category = det.category.strip()
+            if not category:
+                continue
+            if np.allclose(seg.box_xyxy, np.zeros(4, dtype=np.float32)):
+                continue
+            if np.asarray(seg.mask).sum() <= 0:
+                continue
+            candidates.append((order, category, det, seg))
+        if not candidates:
+            return {}
+
+        best_by_category: Dict[str, tuple[int, DetectionResult, SegmentationResult]] = {}
+        for order, category, det, seg in candidates:
+            current = best_by_category.get(category)
+            candidate_key = (-float(seg.iou_score), -float(det.confidence), int(seg.frame_idx), order)
+            if current is None:
+                best_by_category[category] = (order, det, seg)
+                continue
+
+            current_order, current_det, current_seg = current
+            current_key = (
+                -float(current_seg.iou_score),
+                -float(current_det.confidence),
+                int(current_seg.frame_idx),
+                current_order,
+            )
+            if candidate_key < current_key:
+                best_by_category[category] = (order, det, seg)
+
+        selected = [
+            (category, order, det, seg)
+            for category, (order, det, seg) in best_by_category.items()
+        ]
+        selected.sort(key=lambda item: (int(item[3].frame_idx), item[0], item[1]))
+
+        grouped: Dict[int, list[tuple[str, int, DetectionResult, SegmentationResult]]] = {}
+        for item in selected:
+            grouped.setdefault(int(item[3].frame_idx), []).append(item)
+
+        video_segments: Dict[int, Dict[int, np.ndarray]] = {}
+        next_obj_id = int(start_obj_id)
+
+        for frame_idx in sorted(grouped):
+            frame_items = grouped[frame_idx]
+            obj_ids = list(range(next_obj_id, next_obj_id + len(frame_items)))
+            masks = [seg.mask for _, _, _, seg in frame_items]
+            tracked_segments = self.track_from_masks(
+                video_dir=video_dir,
+                ann_frame_idx=frame_idx,
+                obj_ids=obj_ids,
+                masks=masks,
+            )
+            merge_video_segments(
+                target=video_segments,
+                source=tracked_segments,
+                iou_thresh=merge_iou_thresh,
+            )
+            next_obj_id += len(frame_items)
 
         return video_segments
 
