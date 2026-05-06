@@ -138,6 +138,8 @@ class SegmenterAndTracker:
         ann_frame_idx: int,
         obj_ids: Sequence[int],
         masks: Sequence[np.ndarray],
+        start_frame_idx: int | None = None,
+        end_frame_idx: int | None = None,
     ) -> Dict[int, Dict[int, np.ndarray]]:
         if len(obj_ids) != len(masks):
             raise ValueError("obj_ids 与 masks 长度不一致")
@@ -156,6 +158,13 @@ class SegmenterAndTracker:
 
         video_segments: Dict[int, Dict[int, np.ndarray]] = {}
         num_frames = state["num_frames"]
+        range_start = ann_frame_idx if start_frame_idx is None else int(start_frame_idx)
+        range_end = (num_frames - 1) if end_frame_idx is None else int(end_frame_idx)
+        range_start = max(0, range_start)
+        range_end = min(num_frames - 1, range_end)
+        if range_end < range_start:
+            self.video_predictor.reset_state(state)
+            return {}
 
         for out_frame_idx, out_obj_ids, out_mask_logits in self.video_predictor.propagate_in_video(
             state,
@@ -163,6 +172,8 @@ class SegmenterAndTracker:
             max_frame_num_to_track=num_frames,
             reverse=False,
         ):
+            if out_frame_idx < range_start or out_frame_idx > range_end:
+                continue
             video_segments[out_frame_idx] = {
                 out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy().squeeze().astype(np.uint8)
                 for i, out_obj_id in enumerate(out_obj_ids)
@@ -174,6 +185,8 @@ class SegmenterAndTracker:
             max_frame_num_to_track=num_frames,
             reverse=True,
         ):
+            if out_frame_idx < range_start or out_frame_idx > range_end:
+                continue
             video_segments[out_frame_idx] = {
                 out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy().squeeze().astype(np.uint8)
                 for i, out_obj_id in enumerate(out_obj_ids)

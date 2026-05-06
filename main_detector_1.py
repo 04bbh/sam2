@@ -201,7 +201,6 @@ def run_single_video(
     segmenter_and_tracker: SegmenterAndTracker,
     task: VideoTask,
     cfg: dict,
-    log_file: str | None = None,
 ) -> None:
     videos_root = cfg["data"]["videos_root"]
     video_dir = os.path.join(videos_root, task.video_path)
@@ -245,14 +244,12 @@ def run_single_video(
         f"candidate_frames={len(candidate_indices)}"
     )
 
-    # 两阶段检测：
-    # 第一阶段：对候选帧整体判断异常类别（可多类）。
-    # 第二阶段：分 batch 定位，使用第一阶段输出的类别作为目标类别。
+    # 单阶段检测：直接使用配置中的 target_desc 做 batch 定位。
     batch_size = int(cfg["pipeline"]["batch_size"])
     seg_results = []
     det_count = 0
-    stage2_target_desc = None if detector.use_two_stage else cfg["qwen"]["target_desc"]
-    visualize_stage2 = cfg.get("pipeline", {}).get("visualize_detector_stage2", True)
+    stage2_target_desc = cfg["qwen"]["target_desc"]
+    visualize_stage2 = cfg.get("pipeline", {}).get("visualize_detector", True)
     detector_stage2_vis_root = cfg.get("data", {}).get(
         "detector_stage2_vis_root",
         "./outputs/detector_stage2_vis",
@@ -265,29 +262,12 @@ def run_single_video(
     detector_stage2_json_path = os.path.join(detector_stage2_json_root, task.video_path + ".json")
     all_det_results = []
 
-    if detector.use_two_stage:
-        stage1_paths = [frame_paths[i] for i in candidate_indices]
-        stage1_items = detector.detect_categories_with_reason(stage1_paths)
-        categories = []
-        for item in stage1_items:
-            name = item.get("name")
-            if isinstance(name, str) and name not in categories:
-                categories.append(name)
-        if not categories:
-            print(f"[Skip] 未识别到目标类别: {task.video_path}")
-            return
-        stage2_target_desc = "，".join(categories)
-        print(f"[Stage1] video={task.video_path} categories={categories} reasons={stage1_items}")
-
     for st in range(0, len(candidate_indices), batch_size):
         batch_indices = candidate_indices[st: st + batch_size]
         batch_paths = [frame_paths[i] for i in batch_indices]
         det_batch = detector.infer_batch(batch_paths, batch_indices, target_desc=stage2_target_desc)
         all_det_results.extend(det_batch)
         det_count += len(det_batch)
-        if log_file is not None:
-            log_file.write(str(det_batch))
-            log_file.write('\n')
         if visualize_stage2:
             save_detection_results(det_batch, detector_stage2_vis_dir)
 
@@ -373,7 +353,7 @@ def run_single_video(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config.yaml", type=str)
-    parser.add_argument("--input_json", default="sht_json/input_datas_sht_original_scaled_chaserunmove.json", type=str)
+    parser.add_argument("--input_json", default="sht_json/input_datas_sht_original_scaled.json", type=str)
     args = parser.parse_args()
 
     cfg = load_cfg(args.config)
@@ -386,8 +366,6 @@ def main() -> None:
         model_path=cfg["qwen"]["model_path"],
         target_desc=cfg["qwen"]["target_desc"],
         max_new_tokens=cfg["qwen"]["max_new_tokens"],
-        stage1_max_new_tokens=cfg["qwen"].get("stage1_max_new_tokens", 128),
-        use_two_stage=cfg["qwen"].get("use_two_stage", False),
         use_quantization=False,
         use_flashattn=True,
         device=device,
@@ -400,13 +378,11 @@ def main() -> None:
         multimask_output=cfg["sam2"]["multimask_output"],
         device=device,
     )
-    log_file = open('logs/detector_stage2_logs/log1.txt', 'w')
     for task in tasks:
         try:
-            run_single_video(detector, segmenter_and_tracker, task, cfg, log_file)
+            run_single_video(detector, segmenter_and_tracker, task, cfg)
         except Exception as e:
             print(f"[Error] {task.video_path}: {e}")
-    log_file.close()
 
 if __name__ == "__main__":
     main()

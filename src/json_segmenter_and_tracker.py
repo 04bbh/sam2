@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import random
 from typing import Any, Dict, List
 
 import numpy as np
@@ -93,6 +94,16 @@ class JsonSegmenterAndTracker(SegmenterAndTracker):
         return category.strip()
 
     @staticmethod
+    def _parse_optional_int_field(detection: dict[str, Any], key: str) -> int | None:
+        value = detection.get(key)
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except Exception:
+            return None
+
+    @staticmethod
     def json_blocks_to_detections(
         video_dir: str,
         blocks: list[dict[str, Any]],
@@ -125,6 +136,12 @@ class JsonSegmenterAndTracker(SegmenterAndTracker):
                         box_xyxy=box_xyxy,
                         confidence=JsonSegmenterAndTracker._parse_confidence(detection),
                         category=JsonSegmenterAndTracker._parse_category(detection),
+                        start_frame_id=JsonSegmenterAndTracker._parse_optional_int_field(
+                            detection, "start_frame_id"
+                        ),
+                        end_frame_id=JsonSegmenterAndTracker._parse_optional_int_field(
+                            detection, "end_frame_id"
+                        ),
                     )
                 )
 
@@ -183,6 +200,8 @@ class JsonSegmenterAndTracker(SegmenterAndTracker):
         blocks: list[dict[str, Any]],
         start_obj_id: int,
         merge_iou_thresh: float,
+        use_sam_iou_keyframe_selection: bool = True,
+        random_keyframe_seed: int = 0,
     ) -> Dict[int, Dict[int, np.ndarray]]:
         detections = self.json_blocks_to_detections(video_dir=video_dir, blocks=blocks)
         if not detections:
@@ -202,28 +221,45 @@ class JsonSegmenterAndTracker(SegmenterAndTracker):
         if not candidates:
             return {}
 
-        best_by_category: Dict[str, tuple[int, DetectionResult, SegmentationResult]] = {}
-        for order, category, det, seg in candidates:
-            current = best_by_category.get(category)
-            candidate_key = (-float(seg.iou_score), -float(det.confidence), int(seg.frame_idx), order)
-            if current is None:
-                best_by_category[category] = (order, det, seg)
-                continue
+        if use_sam_iou_keyframe_selection:
+            best_by_category: Dict[str, tuple[int, DetectionResult, SegmentationResult]] = {}
+            for order, category, det, seg in candidates:
+                current = best_by_category.get(category)
+                candidate_key = (
+                    -float(seg.iou_score),
+                    -float(det.confidence),
+                    int(seg.frame_idx),
+                    order,
+                )
+                if current is None:
+                    best_by_category[category] = (order, det, seg)
+                    continue
 
-            current_order, current_det, current_seg = current
-            current_key = (
-                -float(current_seg.iou_score),
-                -float(current_det.confidence),
-                int(current_seg.frame_idx),
-                current_order,
-            )
-            if candidate_key < current_key:
-                best_by_category[category] = (order, det, seg)
+                current_order, current_det, current_seg = current
+                current_key = (
+                    -float(current_seg.iou_score),
+                    -float(current_det.confidence),
+                    int(current_seg.frame_idx),
+                    current_order,
+                )
+                if candidate_key < current_key:
+                    best_by_category[category] = (order, det, seg)
 
-        selected = [
-            (category, order, det, seg)
-            for category, (order, det, seg) in best_by_category.items()
-        ]
+            selected = [
+                (category, order, det, seg)
+                for category, (order, det, seg) in best_by_category.items()
+            ]
+        else:
+            rng = random.Random(int(random_keyframe_seed))
+            category_candidates: Dict[str, list[tuple[int, str, DetectionResult, SegmentationResult]]] = {}
+            for item in candidates:
+                category_candidates.setdefault(item[1], []).append(item)
+
+            selected = []
+            for category in sorted(category_candidates):
+                items = category_candidates[category]
+                selected.append(rng.choice(items))
+
         selected.sort(key=lambda item: (int(item[3].frame_idx), item[0], item[1]))
 
         grouped: Dict[int, list[tuple[str, int, DetectionResult, SegmentationResult]]] = {}
@@ -235,20 +271,30 @@ class JsonSegmenterAndTracker(SegmenterAndTracker):
 
         for frame_idx in sorted(grouped):
             frame_items = grouped[frame_idx]
-            obj_ids = list(range(next_obj_id, next_obj_id + len(frame_items)))
-            masks = [seg.mask for _, _, _, seg in frame_items]
-            tracked_segments = self.track_from_masks(
-                video_dir=video_dir,
-                ann_frame_idx=frame_idx,
-                obj_ids=obj_ids,
-                masks=masks,
-            )
-            merge_video_segments(
-                target=video_segments,
-                source=tracked_segments,
-                iou_thresh=merge_iou_thresh,
-            )
-            next_obj_id += len(frame_items)
+            for _, _, det, seg in frame_items:
+                range_start = det.start_frame_id
+                range_end = det.end_frame_id
+                if range_start is not None and range_end is not None and range_end < range_start:
+                    continue
+                if range_start is not None and int(seg.frame_idx) < int(range_start):
+                    continue
+                if range_end is not None and int(seg.frame_idx) > int(range_end):
+                    continue
+
+                tracked_segments = self.track_from_masks(
+                    video_dir=video_dir,
+                    ann_frame_idx=frame_idx,
+                    obj_ids=[next_obj_id],
+                    masks=[seg.mask],
+                    start_frame_idx=range_start,
+                    end_frame_idx=range_end,
+                )
+                merge_video_segments(
+                    target=video_segments,
+                    source=tracked_segments,
+                    iou_thresh=merge_iou_thresh,
+                )
+                next_obj_id += 1
 
         return video_segments
 

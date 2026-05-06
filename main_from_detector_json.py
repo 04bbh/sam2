@@ -7,16 +7,17 @@ import argparse
 import json
 import os
 from pathlib import Path
-os.environ["CUDA_VISIBLE_DEVICES"] = "1,0,2,3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1,2,3,0"
 import torch
 import yaml
 
 from src.detector_json_filter import (
     CONFIDENCE_THRESHOLD,
     MIN_CATEGORY_COUNT,
+    RANGE_CONFIDENCE_THRESHOLD,
     filter_json_data_multi_best,
 )
-from src.json_segmenter_and_tracker import JsonSegmenterAndTracker
+from src.json_segmenter_and_tracker import JsonSegmenterAndTracker, list_frames
 from utils.mask_to_box_track import save_video_track_txt
 from utils.visualization import save_tracking_results
 
@@ -40,13 +41,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--input-json-dir",
         type=Path,
-        default="./output_json_detector/detector_stage2_json_nochaserunmove_addfall_1",
+        default="./output_json_detector/detector_json_original",
         help="Directory containing detector JSON files. Defaults to data.detector_stage2_json_root.",
     )
     parser.add_argument(
         "--filtered-json-root",
         type=Path,
-        default="filtered",
+        default="filtered_1",
         help="Directory for filtered JSON files. Defaults to ${input-json-dir}_filtered2.",
     )
     parser.add_argument(
@@ -66,9 +67,51 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=3,
         help=(
-            "Only categories with at least this many detections after confidence "
+            "Only categories with at least this many detections after confidence"
             f"filtering are kept. Default: {MIN_CATEGORY_COUNT}"
         ),
+    )
+    parser.add_argument(
+        "--box-filter",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Enable confidence-threshold box filtering before multi-best selection. "
+            "Enabled by default; use --no-box-filter for ablation."
+        ),
+    )
+    parser.add_argument(
+        "--range-threshold",
+        type=float,
+        default=0.80,
+        help=(
+            "Confidence threshold used only for category start/end frame range "
+            f"calculation. Default: {RANGE_CONFIDENCE_THRESHOLD}"
+        ),
+    )
+    parser.add_argument(
+        "--temporal-localization",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Enable category temporal localization for start/end frame ids. "
+            "Enabled by default; use --no-temporal-localization for ablation."
+        ),
+    )
+    parser.add_argument(
+        "--sam-iou-keyframe-selection",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Select one keyframe per category by SAM IoU/confidence rules. "
+            "Enabled by default; use --no-sam-iou-keyframe-selection for random ablation."
+        ),
+    )
+    parser.add_argument(
+        "--random-keyframe-seed",
+        type=int,
+        default=0,
+        help="Random seed used when --no-sam-iou-keyframe-selection is set. Default: 0.",
     )
     return parser.parse_args()
 
@@ -143,6 +186,11 @@ def run_single_json(
     segmenter_and_tracker: JsonSegmenterAndTracker,
     threshold: float,
     min_count: int,
+    box_filter: bool,
+    range_threshold: float,
+    temporal_localization: bool,
+    sam_iou_keyframe_selection: bool,
+    random_keyframe_seed: int,
     save_filtered: bool,
 ) -> None:
     video_name = json_path.stem
@@ -158,8 +206,23 @@ def run_single_json(
         print(f"[Skip] 输出目录和轨迹文件已存在: {out_dir} {track_txt_path}")
         return
 
+    frame_paths = list_frames(video_dir)
+    if not frame_paths:
+        print(f"[Skip] 视频目录无可用帧: {video_dir}")
+        return
+    video_last_frame_id = len(frame_paths) - 1
+
     data = load_detector_json(json_path)
-    filtered_data = filter_json_data_multi_best(data, threshold=threshold, min_count=min_count)
+    filtered_data = filter_json_data_multi_best(
+        data,
+        threshold=threshold,
+        min_count=min_count,
+        video_last_frame_id=video_last_frame_id,
+        range_threshold=range_threshold,
+        enable_temporal_localization=temporal_localization,
+        enable_box_filter=box_filter,
+        random_keyframe_seed=random_keyframe_seed,
+    )
 
     if save_filtered:
         filtered_path = filtered_json_root / json_path.name
@@ -180,6 +243,8 @@ def run_single_json(
         blocks=filtered_data,
         start_obj_id=ann_obj_id,
         merge_iou_thresh=merge_iou_thresh,
+        use_sam_iou_keyframe_selection=sam_iou_keyframe_selection,
+        random_keyframe_seed=random_keyframe_seed,
     )
 
     if not video_segments:
@@ -194,7 +259,7 @@ def run_single_json(
         f"[Done] video={video_name} raw_blocks={len(data)} "
         f"filtered_blocks={len(filtered_data)} categories={count_categories(filtered_data)} "
         f"seeds={count_detections(filtered_data)} tracked_frames={len(video_segments)} "
-        f"score={track_score:.4f}"
+        f"score={track_score:.3f}"
     )
     print(f"[Done] 保存结果: {out_dir}")
     print(f"[Done] 轨迹文件: {track_txt_path}")
@@ -232,6 +297,11 @@ def main() -> None:
                 segmenter_and_tracker=segmenter_and_tracker,
                 threshold=args.threshold,
                 min_count=args.min_count,
+                box_filter=args.box_filter,
+                range_threshold=args.range_threshold,
+                temporal_localization=args.temporal_localization,
+                sam_iou_keyframe_selection=args.sam_iou_keyframe_selection,
+                random_keyframe_seed=args.random_keyframe_seed,
                 save_filtered=args.save_filtered_json,
             )
         except Exception as exc:

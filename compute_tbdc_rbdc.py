@@ -12,9 +12,7 @@ import argparse
 import os
 import pdb
 
-import matplotlib.pyplot as plt
 import numpy as np
-from sklearn import metrics
 
 
 class ContinuousTrack:
@@ -41,6 +39,50 @@ class Region:
 
     def __str__(self):
         return str(self.__class__) + ": " + str(self.__dict__)
+
+
+def plot_auc_roc_curves(fpr, rbdr, tbdr, rbdc, tbdc, plot_path=None, show_plot=False):
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError as e:
+        raise ImportError(
+            "Visualization requires matplotlib and Pillow. "
+            "Please install them, e.g. `pip install matplotlib pillow`."
+        ) from e
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+    axes[0].plot(fpr, rbdr, color='tab:blue', linewidth=2, label=f'AUC = {rbdc:.4f}')
+    axes[0].set_title('RBDC AUC-ROC Curve')
+    axes[0].set_xlabel('FPR')
+    axes[0].set_ylabel('RBDR')
+    axes[0].set_xlim([0, 1])
+    axes[0].set_ylim([0, 1.05])
+    axes[0].grid(True, linestyle='--', alpha=0.4)
+    axes[0].legend(loc='lower right')
+
+    axes[1].plot(fpr, tbdr, color='tab:orange', linewidth=2, label=f'AUC = {tbdc:.4f}')
+    axes[1].set_title('TBDC AUC-ROC Curve')
+    axes[1].set_xlabel('FPR')
+    axes[1].set_ylabel('TBDR')
+    axes[1].set_xlim([0, 1])
+    axes[1].set_ylim([0, 1.05])
+    axes[1].grid(True, linestyle='--', alpha=0.4)
+    axes[1].legend(loc='lower right')
+
+    fig.tight_layout()
+
+    if plot_path:
+        plot_dir = os.path.dirname(plot_path)
+        if plot_dir:
+            os.makedirs(plot_dir, exist_ok=True)
+        fig.savefig(plot_path, dpi=200, bbox_inches='tight')
+        print(f'ROC curves saved to: {plot_path}')
+
+    if show_plot:
+        plt.show()
+
+    plt.close(fig)
 
 
 def bb_intersection_over_union(boxA, boxB):
@@ -79,7 +121,7 @@ def compute_tbdr(gt_tracks, num_matched_detections_per_track, alpha):
 
 
 def compute_fpr_rbdr(pred_anomalies_detected: [Region], gt_anomalies: [Region], all_gt_tracks,
-                     num_frames, alpha=0.1, beta=0.1):
+                     num_frames, alpha=0.1, beta=0.1, plot_path=None, show_plot=False):
 
     num_tracks = len(all_gt_tracks)
     num_matched_detections_per_track = [0] * num_tracks
@@ -147,21 +189,16 @@ def compute_fpr_rbdr(pred_anomalies_detected: [Region], gt_anomalies: [Region], 
         fpr = np.insert(fpr, idx_1, 1)
         idx_1 += 1
 
-    tbdc = metrics.auc(fpr[:idx_1], tbdr[:idx_1])
-    rbdc = metrics.auc(fpr[:idx_1], rbdr[:idx_1])
+    tbdc = np.trapz(tbdr[:idx_1], fpr[:idx_1])
+    rbdc = np.trapz(rbdr[:idx_1], fpr[:idx_1])
 
     print(f'tbdc = {tbdc}')
     print(f'rbdc = {rbdc}')
 
-    plt.plot(fpr, rbdr, '-')
-    plt.xlabel('FPR')
-    plt.ylabel('RBDR')
-    plt.show()
+    plot_auc_roc_curves(fpr[:idx_1], rbdr[:idx_1], tbdr[:idx_1], rbdc, tbdc,
+                        plot_path=plot_path, show_plot=show_plot)
 
-    plt.plot(fpr, tbdr, '-')
-    plt.xlabel('FPR')
-    plt.ylabel('TBDR')
-    plt.show()
+    return tbdc, rbdc
 
 
 def read_tracks(tracks_path) -> [ContinuousTrack]:
@@ -234,25 +271,32 @@ def read_detected_anomalies(anomalies_path) -> [Region]:
     return predicted_regions
 
 
-def compute_metrics(tracks_path, anomalies_path, num_frames_in_video):
+def compute_metrics(tracks_path, anomalies_path, num_frames_in_video, plot_path=None, show_plot=False):
 
     all_gt_tracks = read_tracks(tracks_path)
     gt_regions = get_gt_regions(all_gt_tracks)
     predicted_anomalies = read_detected_anomalies(anomalies_path)
-    compute_fpr_rbdr(predicted_anomalies, gt_regions, all_gt_tracks, num_frames_in_video)
+    return compute_fpr_rbdr(predicted_anomalies, gt_regions, all_gt_tracks, num_frames_in_video,
+                            plot_path=plot_path, show_plot=show_plot)
 
 
 parser = argparse.ArgumentParser(description='Process some integers.')
 parser.add_argument('--tracks-path', required=True, type=str, help="The path to the tracks.")
 parser.add_argument('--anomalies-path', required=True, type=str, help="The path to the detected anomalies.")
 parser.add_argument('--num-frames', required=True, type=int, help="The total number of frames in videos.")
+parser.add_argument('--plot-path', default='rbdc_tbdc_auc_roc.png', type=str,
+                    help="Path to save the AUC-ROC curves figure.")
+parser.add_argument('--show-plot', action='store_true',
+                    help="Show the plot window in addition to saving the figure.")
 
 args = parser.parse_args()
 
 if __name__ == '__main__':
     compute_metrics(tracks_path=args.tracks_path,
                     anomalies_path=args.anomalies_path,
-                    num_frames_in_video=args.num_frames)
+                    num_frames_in_video=args.num_frames,
+                    plot_path=args.plot_path,
+                    show_plot=args.show_plot)
 
 """
 How to run:

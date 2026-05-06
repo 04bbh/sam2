@@ -1,79 +1,13 @@
 qwen:
   model_path: "Qwen3-VL-8B-Instruct"
-  target_desc: "打斗，骑自行车，骑摩托车，机动车，跳跃，抢夺，小推车，翻越栏杆，摔倒，滑滑板，奔跑，挥舞物品"
-
+  target_desc: "打斗，骑自行车，骑摩托车，机动车，跳远，抢夺，小推车，翻越栏杆，摔倒，向上抛掷物品，滑滑板，快速奔跑，挥舞长棍"
+  # "打斗，骑自行车，骑摩托车，机动车，跳远，抢夺，小推车，翻越栏杆，摔倒，向上抛掷物品，滑滑板，快速奔跑，挥舞长棍"
+  # "打斗，骑自行车，骑摩托车，机动车，跳跃，抢夺，小推车，翻越栏杆，摔倒，滑滑板的人"
   # "追逐，打斗，奔跑，骑自行车，骑摩托车，滑滑板，驾驶机动车，跳跃，抢夺，推车，挥舞物品，翻越栏杆"
   # "打斗，骑自行车，骑摩托车，机动车，跳跃，抢夺，小推车，翻越栏杆，摔倒，向上抛掷物品，滑滑板的人"
-    # 类别结构如下：
-    # - 目标类别：类别名称
-    # - 正向定义：属于该类别的描述
-    # - 逆向定义：不属于该类别的描述
-    # - 定位要求：目标框选取规则
-
-    # 1. 目标类别：追逐
-    #    正向定义：多人之间存在明显追赶、逃跑或快速接近。
-    #    逆向定义：普通同向行走、正常并行或相向擦身而过，不构成追逐。
-    #    定位要求：分别框出追赶者和被追赶者，所有参与者都需输出。
-
-    # 2. 目标类别：打斗
-    #    正向定义：两人或多人推搡、挥拳、踢打、扭打、拉扯、围攻等肢体冲突。
-    #    逆向定义：普通交谈、轻触、礼貌性肢体接触或正常社交动作。
-    #    定位要求：分别框出参与冲突的人；若多人严重重叠难以分开，可框一个整体区域。
-
-    # 3. 目标类别：奔跑
-    #    正向定义：明显快速奔跑、冲刺、逃离或突然加速。
-    #    逆向定义：正常行走或站立等待。
-    #    定位要求：框出每个奔跑者身体整体。
-
-    # 4. 目标类别：骑自行车
-    #    正向定义：人在监控场景中骑行自行车。
-    #    逆向定义：静止停放的自行车。
-    #    定位要求：应框出骑车人及其自行车整体；多人骑车时分别输出。
-
-    # 5. 目标类别：骑摩托车
-    #    正向定义：人骑摩托车、电动车、助动车或类似两轮机动车。
-    #    逆向定义：无乘骑摩托车、电动车、助动车或类似两轮机动车状态。
-    #    定位要求：应框出骑手及车辆整体；多人或多车时分别输出。
-
-    # 6. 目标类别：滑滑板车
-    #    正向定义：人骑行滑板车、踏板车、滑板或类似小型滑行工具。
-    #    逆向定义：手持滑行工具行走或工具静止未使用。
-    #    定位要求：应框出人和滑行工具整体。
-
-    # 7. 目标类别：驾驶机动车
-    #    正向定义：汽车、面包车、卡车等机动车在监控场景中行驶、穿行、停靠。
-    #    逆向定义：画面中无汽车、面包车、卡车等机动车。
-    #    定位要求：应框出机动车整体。
-
-    # 8. 目标类别：跳跃
-    #    正向定义：明显跳起、跨越、从高处跳下、跳过障碍物等动作。
-    #    逆向定义：普通抬脚、迈步或轻微上下起伏。
-    #    定位要求：应框出跳跃的人；跨越时可包含与动作紧密相关的障碍边缘。
-
-    # 9. 目标类别：抢夺
-    #    正向定义：抢包、抢物、拉扯财物、强行夺取物品。
-    #    逆向定义：正常递交、交换物品或合作搬运。
-    #    定位要求：分别框出抢夺者和受害者；物品清晰可见时可包含其区域。
-
-    # 10. 目标类别：推车
-    #     正向定义：推动推车、手推车、婴儿车等载具。
-    #     逆向定义：无推车、手推车、婴儿车等载具。
-    #     定位要求：应框出人和被推动车辆整体。
-
-    # 11. 目标类别：挥舞物品
-    #     正向定义：持棍棒、工具、包、伞、瓶子等物体进行明显挥动。
-    #     逆向定义：正常手持物品行走或静止拿持。
-    #     定位要求：应框出挥舞者，尽量包含被挥舞物品。
-
-    # 12. 目标类别：翻越栏杆
-    #     正向定义：翻越、攀爬、跨过栏杆、围栏、墙体或隔离带。
-    #     逆向定义：正常经过、站在栏杆旁或手扶栏杆但未翻越。
-    #     定位要求：应框出翻越的人，并可包含其接触的栏杆区域。
 
   # "追逐，打斗，奔跑，骑自行车，骑摩托车，滑滑板，机动车，跳跃，投掷，抢夺，摔倒，推车，挥舞物品，翻越"
   max_new_tokens: 256
-  use_two_stage: false
-  stage1_max_new_tokens: 128
 
 sam2:
   model_cfg: "configs/sam2.1/sam2.1_hiera_l.yaml"
@@ -92,21 +26,21 @@ selector:
 
 candidate_selector:
   high_ratio: 0.8
-  mid_ratio: 0.2
-  low_ratio: 0.1
+  mid_ratio: 0.3
+  low_ratio: 0.3
   uniform_interval: 0
 
 pipeline:
   batch_size: 4
   queue_size: 32
-  visualize_detector_stage2: true
+  visualize_detector: true
 
 data:
   dataset_name: "SHT"
   videos_root: "/data/users/wjq/datasets/shanghaitech/testing/frames"
   # "/data/users/wjq/datasets/shanghaitech/testing/frames"
-  output_root: "./outputs/4"
-  track_txt_root: "./tracks/4"
-  detector_stage2_vis_root: "./outputs/detector_stage2_vis_chaserunmove_delchaseclass"
-  detector_stage2_json_root: "./output_json_detector/detector_stage2_json_chaserunmove_delchaseclass"
+  output_root: "./outputs/improved_temploc0.8"
+  track_txt_root: "./tracks/improved_temploc0.8"
+  detector_stage2_vis_root: "./outputs/detector_stage2_vis_noconfidencerule"
+  detector_stage2_json_root: "./output_json_detector/detector_stage2_json_noconfidencerule"
   ann_obj_id: 1

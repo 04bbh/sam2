@@ -7,6 +7,7 @@ import argparse
 import copy
 import json
 import math
+import random
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -16,8 +17,31 @@ DEFAULT_INPUT_DIR = Path("output_json_detector/detector_stage2_json_chaserunmove
 DEFAULT_OUTPUT_DIR = Path("output_json_detector/detector_stage2_json_chaserunmove_1_filtered")
 CONFIDENCE_THRESHOLD = 0.9
 MIN_CATEGORY_COUNT = 3
+RANGE_CONFIDENCE_THRESHOLD = 0.85
 
-
+FULL_VIDEO_RANGE_CATEGORIES = {
+    "骑自行车",
+    "骑摩托车",
+    "机动车",
+    "小推车",
+    "推车",
+    "垃圾推车",
+}
+ACTION_RANGE_CATEGORIES = {
+    "打斗",
+    "跳跃",
+    "抢夺",
+    "翻越栏杆",
+    "摔倒",
+    "奔跑",
+    "快速奔跑",
+    "追逐",
+    "挥舞物品",
+    "滑滑板",
+    "滑滑板的人",
+    "向上抛物品",
+    "捡起掉落的物品"
+}
 def confidence_value(detection: dict[str, Any]) -> float:
     try:
         return float(detection.get("confidence", 0.0))
@@ -30,6 +54,15 @@ def frame_id_value(block: dict[str, Any]) -> int:
         return int(block.get("frame_id", 0))
     except Exception:
         return 0
+
+
+def normalize_category_name(category: Any) -> str:
+    if category is None:
+        return ""
+    category_name = str(category).strip()
+    if not category_name:
+        return ""
+    return category_name
 
 
 def filter_low_confidence_blocks(
@@ -177,9 +210,188 @@ def filter_json_data_multi_best(
     data: list[dict[str, Any]],
     threshold: float,
     min_count: int,
+    video_last_frame_id: int,
+    range_threshold: float = RANGE_CONFIDENCE_THRESHOLD,
+    enable_temporal_localization: bool = True,
+    enable_box_filter: bool = True,
+    random_keyframe_seed: int = 0,
 ) -> list[dict[str, Any]]:
-    confidence_filtered = filter_low_confidence_blocks(data, threshold)
-    return pick_category_multi_best(confidence_filtered, min_count)
+    if enable_box_filter:
+        confidence_filtered = filter_low_confidence_blocks(data, threshold)
+        filtered_multi_best = pick_category_multi_best(confidence_filtered, min_count)
+    else:
+        filtered_multi_best = pick_global_best_single(data, random_keyframe_seed)
+
+    if enable_temporal_localization:
+        category_ranges = compute_category_frame_ranges(
+            original_blocks=data,
+            selected_blocks=filtered_multi_best,
+            video_last_frame_id=video_last_frame_id,
+            range_threshold=range_threshold,
+        )
+        attach_category_ranges(filtered_multi_best, category_ranges)
+    else:
+        attach_full_video_ranges(
+            blocks=filtered_multi_best,
+            video_last_frame_id=video_last_frame_id,
+        )
+    return filtered_multi_best
+
+
+def pick_global_best_single(
+    blocks: list[dict[str, Any]],
+    random_keyframe_seed: int,
+) -> list[dict[str, Any]]:
+    candidates: list[tuple[dict[str, Any], dict[str, Any], int]] = []
+    best_confidence: float | None = None
+
+    for block_index, block in enumerate(blocks):
+        detections = block.get("detections", [])
+        if not isinstance(detections, list):
+            continue
+        for detection in detections:
+            if not isinstance(detection, dict):
+                continue
+            category_name = normalize_category_name(detection.get("category"))
+            if not category_name:
+                continue
+
+            current_confidence = confidence_value(detection)
+            if best_confidence is None or current_confidence > best_confidence + 1e-9:
+                best_confidence = current_confidence
+                candidates = [(block, detection, block_index)]
+            elif best_confidence is not None and math.isclose(
+                current_confidence,
+                best_confidence,
+                rel_tol=0.0,
+                abs_tol=1e-9,
+            ):
+                candidates.append((block, detection, block_index))
+
+    if not candidates:
+        return []
+
+    rng = random.Random(int(random_keyframe_seed))
+    winner_block, winner_detection, _ = rng.choice(candidates)
+    selected_block = copy.deepcopy(winner_block)
+    selected_block["detections"] = [copy.deepcopy(winner_detection)]
+    return [selected_block]
+
+
+def collect_selected_categories(
+    blocks: list[dict[str, Any]],
+) -> set[str]:
+    selected_categories: set[str] = set()
+    for block in blocks:
+        detections = block.get("detections", [])
+        if not isinstance(detections, list):
+            continue
+        for detection in detections:
+            if not isinstance(detection, dict):
+                continue
+            category_name = normalize_category_name(detection.get("category"))
+            if category_name:
+                selected_categories.add(category_name)
+    return selected_categories
+
+
+def compute_category_frame_ranges(
+    original_blocks: list[dict[str, Any]],
+    selected_blocks: list[dict[str, Any]],
+    video_last_frame_id: int,
+    range_threshold: float,
+) -> dict[str, tuple[int, int]]:
+    if not original_blocks or video_last_frame_id < 0:
+        return {}
+
+    selected_categories = collect_selected_categories(selected_blocks)
+    if not selected_categories:
+        return {}
+
+    category_hit_indices: dict[str, list[int]] = defaultdict(list)
+    for block_index, block in enumerate(original_blocks):
+        detections = block.get("detections", [])
+        if not isinstance(detections, list):
+            continue
+        for detection in detections:
+            if not isinstance(detection, dict):
+                continue
+            category_name = normalize_category_name(detection.get("category"))
+            if category_name not in selected_categories:
+                continue
+            if confidence_value(detection) < range_threshold:
+                continue
+            category_hit_indices[category_name].append(block_index)
+
+    category_ranges: dict[str, tuple[int, int]] = {}
+    for category_name in selected_categories:
+        if category_name in FULL_VIDEO_RANGE_CATEGORIES:
+            category_ranges[category_name] = (0, video_last_frame_id)
+            continue
+
+        if category_name not in ACTION_RANGE_CATEGORIES:
+            continue
+
+        hit_indices = category_hit_indices.get(category_name, [])
+        if not hit_indices:
+            category_ranges[category_name] = (0, video_last_frame_id)
+            continue
+
+        first_hit_index = hit_indices[0]
+        last_hit_index = hit_indices[-1]
+
+        first_hit_frame_id = frame_id_value(original_blocks[first_hit_index])
+        if first_hit_index > 0:
+            start_frame_id = frame_id_value(original_blocks[first_hit_index - 1])
+        else:
+            start_frame_id = max(first_hit_frame_id - 30, 0)
+
+        end_index = min(last_hit_index + 5, len(original_blocks) - 1)
+        end_frame_id = frame_id_value(original_blocks[end_index])
+
+        start_frame_id = max(0, start_frame_id)
+        end_frame_id = max(start_frame_id, end_frame_id)
+        category_ranges[category_name] = (start_frame_id, end_frame_id)
+
+    return category_ranges
+
+
+def attach_category_ranges(
+    blocks: list[dict[str, Any]],
+    category_ranges: dict[str, tuple[int, int]],
+) -> None:
+    if not category_ranges:
+        return
+
+    for block in blocks:
+        detections = block.get("detections", [])
+        if not isinstance(detections, list):
+            continue
+        for detection in detections:
+            if not isinstance(detection, dict):
+                continue
+            category_name = normalize_category_name(detection.get("category"))
+            if not category_name or category_name not in category_ranges:
+                continue
+            start_frame_id, end_frame_id = category_ranges[category_name]
+            detection["start_frame_id"] = int(start_frame_id)
+            detection["end_frame_id"] = int(end_frame_id)
+
+
+def attach_full_video_ranges(
+    blocks: list[dict[str, Any]],
+    video_last_frame_id: int,
+) -> None:
+    end_frame_id = max(0, int(video_last_frame_id))
+    for block in blocks:
+        detections = block.get("detections", [])
+        if not isinstance(detections, list):
+            continue
+        for detection in detections:
+            if not isinstance(detection, dict):
+                continue
+            detection["start_frame_id"] = 0
+            detection["end_frame_id"] = end_frame_id
 
 
 def process_detector_json(
