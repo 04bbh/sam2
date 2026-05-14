@@ -2,19 +2,21 @@ import argparse
 import json
 import math
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "2,3,0,1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2,3"
 
 from dataclasses import dataclass
-from typing import List
+from typing import Dict, List
 
 import torch
+import numpy as np
 import yaml
 
 from utils.mask_to_box_track import save_video_track_txt
+from src.dataset_target_config import get_dataset_target_config
 from src.detector import QwenVLDetector
 from src.segmenter_and_tracker import SegmenterAndTracker
 from src.selector import FrameSelector
-from utils.visualization import save_tracking_results
+from utils.visualization import save_detection_results, save_tracking_results
 
 
 
@@ -63,26 +65,52 @@ def list_frames(video_dir: str) -> List[str]:
         for p in os.listdir(video_dir)
         if os.path.splitext(p)[-1].lower() in [".jpg", ".jpeg", ".png"]
     ]
-    names.sort()
+    names.sort(key=lambda n: int(os.path.splitext(n)[0]))
     return [os.path.join(video_dir, n) for n in names]
 
 
-def select_top_25_percent_indices(scores: List[float]) -> List[int]:
+def select_stratified_score_indices(
+    scores: List[float],
+    high_ratio: float,
+    mid_ratio: float,
+    low_ratio: float,
+    uniform_interval: int,
+) -> List[int]:
     """
-    选取 vid_bin_scores 中 Top-25% 分数对应的索引。
-    至少返回 1 个索引（如果 scores 非空）。
+    对 vid_bin_scores 做分数分层采样，并额外按时间间隔补采样。
+
+    采样方式：
+    - 按分数从高到低排序后划分为高/中/低三层
+    - 高分层取 high_ratio
+    - 中分层取 mid_ratio
+    - 低分层取 low_ratio
+    - 再每隔 uniform_interval 个 score bin 补一个候选，避免时间段完全空白
     """
     if not scores:
         return []
+    if min(high_ratio, mid_ratio, low_ratio) < 0:
+        raise ValueError("采样比例必须 >= 0")
 
     n = len(scores)
-    k = max(1, int(math.ceil(n * 0.25)))
-
-    # 按分数从高到低排序；分数相同按索引从小到大
     ranked = sorted(enumerate(scores), key=lambda x: (-x[1], x[0]))
-    top_indices = [idx for idx, _ in ranked[:k]]
-    top_indices.sort()
-    return top_indices
+    layer_size = int(math.ceil(n / 3.0))
+    layers = [
+        (ranked[:layer_size], high_ratio),
+        (ranked[layer_size: layer_size * 2], mid_ratio),
+        (ranked[layer_size * 2:], low_ratio),
+    ]
+
+    selected = set()
+    for layer, ratio in layers:
+        if not layer or ratio <= 0:
+            continue
+        k = max(1, int(math.ceil(len(layer) * ratio)))
+        selected.update(idx for idx, _ in layer[:k])
+
+    if uniform_interval > 0:
+        selected.update(range(0, n, uniform_interval))
+
+    return sorted(selected)
 
 
 def pick_candidate_indices(total_frames: int, score_indices: List[int], stride: int = 5) -> List[int]:
@@ -95,23 +123,98 @@ def pick_candidate_indices(total_frames: int, score_indices: List[int], stride: 
     return valid
 
 
+def merge_video_segments(target: dict, source: dict, iou_thresh: float = 0.8) -> None:
+    def mask_iou(a: np.ndarray, b: np.ndarray) -> float:
+        a_bool = a.astype(bool)
+        b_bool = b.astype(bool)
+        inter = np.logical_and(a_bool, b_bool).sum()
+        if inter == 0:
+            return 0.0
+        union = np.logical_or(a_bool, b_bool).sum()
+        return float(inter) / float(union) if union > 0 else 0.0
+
+    for frame_idx, obj_masks in source.items():
+        merged = {}
+        if frame_idx in target:
+            merged.update(target[frame_idx])
+        merged.update(obj_masks)
+
+        items = []
+        for obj_id, mask in merged.items():
+            if mask is None:
+                continue
+            m = np.asarray(mask)
+            if m.ndim > 2:
+                m = np.squeeze(m)
+            if m.ndim != 2:
+                continue
+            area = int((m > 0).sum())
+            if area == 0:
+                continue
+            items.append((obj_id, m.astype(np.uint8), area))
+
+        items.sort(key=lambda x: x[2], reverse=True)
+        kept: list[tuple[int, np.ndarray]] = []
+        for obj_id, mask, _ in items:
+            if all(mask_iou(mask, kept_mask) <= iou_thresh for _, kept_mask in kept):
+                kept.append((obj_id, mask))
+
+        target[frame_idx] = {obj_id: mask for obj_id, mask in kept}
+
+
+def save_detector_json(
+    det_results: List,
+    json_path: str,
+    target_desc: str,
+) -> None:
+    grouped: Dict[int, dict] = {}
+    for det in det_results:
+        frame_item = grouped.setdefault(
+            det.frame_idx,
+            {
+                "frame_id": int(det.frame_idx),
+                "target_desc": target_desc,
+                "detections": [],
+            },
+        )
+
+        box = np.asarray(det.box_xyxy, dtype=float).tolist()
+        is_empty = det.confidence <= 0 and not det.category and np.allclose(det.box_xyxy, 0)
+        if is_empty:
+            continue
+
+        frame_item["detections"].append(
+            {
+                "category": det.category,
+                "box": [float(x) for x in box],
+                "confidence": float(det.confidence),
+            }
+        )
+
+    data = [grouped[frame_idx] for frame_idx in sorted(grouped)]
+    os.makedirs(os.path.dirname(json_path), exist_ok=True)
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
 def run_single_video(
     detector: QwenVLDetector,
     segmenter_and_tracker: SegmenterAndTracker,
     task: VideoTask,
     cfg: dict,
+    target_desc: str,
 ) -> None:
     videos_root = cfg["data"]["videos_root"]
     video_dir = os.path.join(videos_root, task.video_path)
-    out_dir = os.path.join(cfg["data"]["output_root"], task.video_path)
-    track_txt_path = os.path.join(cfg["data"]["track_txt_root"], os.path.basename(video_dir) + ".txt")
+    out_vis = os.path.join(cfg["data"]["detector_stage2_vis_root"], task.video_path)
+    out_json = os.path.join(cfg["data"]["detector_stage2_json_root"], os.path.basename(video_dir) + ".json")
 
 
     if not os.path.isdir(video_dir):
         print(f"[Skip] 视频目录不存在: {video_dir}")
         return
-    if os.path.isdir(out_dir) and os.path.isfile(track_txt_path):
-        print(f"[Skip] 输出目录和轨迹文件已存在: {out_dir} {track_txt_path}")
+    if os.path.isdir(out_vis) and os.path.isfile(out_json):
+        print(f"[Skip] 检测可视化结果和json文件已存在: {out_vis} {out_json}")
         return
 
     frame_paths = list_frames(video_dir)
@@ -119,11 +222,18 @@ def run_single_video(
         print(f"[Skip] 无帧图像: {video_dir}")
         return
 
-    top_score_indices = select_top_25_percent_indices(task.vid_bin_scores)
+    candidate_cfg = cfg.get("candidate_selector", {})
+    score_indices = select_stratified_score_indices(
+        scores=task.vid_bin_scores,
+        high_ratio=candidate_cfg.get("high_ratio", 0.30),
+        mid_ratio=candidate_cfg.get("mid_ratio", 0.15),
+        low_ratio=candidate_cfg.get("low_ratio", 0.05),
+        uniform_interval=int(candidate_cfg.get("uniform_interval", 10)),
+    )
     candidate_indices = pick_candidate_indices(
         total_frames=len(frame_paths),
-        score_indices=top_score_indices,
-        stride=5,
+        score_indices=score_indices,
+        stride=int(cfg.get("data", {}).get("candidate_stride", 5)),
     )
 
     if not candidate_indices:
@@ -132,68 +242,136 @@ def run_single_video(
 
     print(
         f"[Info] video={task.video_path} total_frames={len(frame_paths)} "
-        f"top25_score_bins={len(top_score_indices)} candidate_frames={len(candidate_indices)}"
+        f"score_bins={len(task.vid_bin_scores)} selected_score_bins={len(score_indices)} "
+        f"candidate_frames={len(candidate_indices)}"
     )
 
-    # 只在候选帧（score_idx*5）上做检测+分割
+    # 单阶段检测：使用 dataset_name 对应的 target_desc 做 batch 定位。
     batch_size = int(cfg["pipeline"]["batch_size"])
     seg_results = []
+    det_count = 0
+    stage2_target_desc = target_desc
+    visualize_stage2 = cfg.get("pipeline", {}).get("visualize_detector", True)
+    detector_stage2_vis_root = cfg.get("data", {}).get(
+        "detector_stage2_vis_root",
+        "./outputs/detector_stage2_vis",
+    )
+    detector_stage2_vis_dir = os.path.join(detector_stage2_vis_root, task.video_path)
+    detector_stage2_json_root = cfg.get("data", {}).get(
+        "detector_stage2_json_root",
+        "./outputs/detector_stage2_json",
+    )
+    detector_stage2_json_path = os.path.join(detector_stage2_json_root, task.video_path + ".json")
+    all_det_results = []
+
     for st in range(0, len(candidate_indices), batch_size):
         batch_indices = candidate_indices[st: st + batch_size]
         batch_paths = [frame_paths[i] for i in batch_indices]
+        det_batch = detector.infer_batch(batch_paths, batch_indices, target_desc=stage2_target_desc)
+        all_det_results.extend(det_batch)
+        det_count += len(det_batch)
+        if visualize_stage2:
+            save_detection_results(det_batch, detector_stage2_vis_dir)
 
-        det_batch = detector.infer_batch(batch_paths, batch_indices)
-        for det in det_batch:
-            seg_results.append(segmenter_and_tracker.segment(det))
+        # seg_results.extend(segmenter_and_tracker.segment_many(det_batch))
 
-    if not seg_results:
-        print(f"[Skip] 未得到可用分割结果: {task.video_path}")
-        return
-
-    # 在候选帧中筛选关键帧
-    selector = FrameSelector(alpha=cfg["selector"]["alpha"], beta=cfg["selector"]["beta"])
-    best = selector.select_best(seg_results)
-    if best is None:
-        print(f"[Skip] 关键帧得分均低于阈值: {task.video_path}")
-        return
-
-    print(
-        f"[Best] video={task.video_path} frame_idx={best.frame_idx} "
-        f"score={best.score:.4f} (qwen_conf={best.confidence:.4f}, sam_iou={best.iou_score:.4f})"
+    save_detector_json(
+        det_results=all_det_results,
+        json_path=detector_stage2_json_path,
+        target_desc=stage2_target_desc or "",
     )
+    print(f"[Done] 检测 JSON: {detector_stage2_json_path}")
 
-    # 从关键帧向全视频传播
-    video_segments = segmenter_and_tracker.track_from_mask(
-        video_dir=video_dir,
-        ann_frame_idx=best.frame_idx,
-        ann_obj_id=int(cfg["data"]["ann_obj_id"]),
-        mask=best.mask,
-    )
+    # if not seg_results:
+    #     print(f"[Skip] 未得到可用分割结果: {task.video_path}")
+    #     return
+
+    # valid_seg_count = sum(1 for seg in seg_results if not (seg.box_xyxy == 0).all())
+    # print(
+    #     f"[Detect] video={task.video_path} detections={det_count} "
+    #     f"segmentations={len(seg_results)} valid_segmentations={valid_seg_count}"
+    # )
+
+    # # 在候选帧中筛选关键帧
+    # selector_cfg = cfg["selector"]
+    # selector = FrameSelector(
+    #     alpha=selector_cfg["alpha"],
+    #     beta=selector_cfg["beta"],
+    #     min_score=selector_cfg.get("min_score", 0.6),
+    #     count_bonus=selector_cfg.get("count_bonus", 0.03),
+    #     max_targets_per_frame=selector_cfg.get("max_targets_per_frame", 3),
+    #     min_frame_gap=selector_cfg.get("min_frame_gap", 30),
+    # )
+    # top_k_frames = int(selector_cfg.get("top_k_frames", 3))
+    # best_frames = selector.select_top_frames(seg_results, top_k=top_k_frames)
+    # if not best_frames:
+    #     print(f"[Skip] 关键帧得分均低于阈值: {task.video_path}")
+    #     return
+
+    # for rank, frame in enumerate(best_frames, start=1):
+    #     print(
+    #         f"[Best-{rank}] video={task.video_path} frame_idx={frame.frame_idx} "
+    #         f"score={frame.score:.4f} targets={len(frame.segmentations)} "
+    #         f"(avg_qwen_conf={frame.confidence:.4f}, avg_sam_iou={frame.iou_score:.4f})"
+    #         f"segmentations={frame.segmentations}"
+    #     )
+
+    # # 同一个关键帧里的多个目标一次性加入同一个 SAM2 state，再统一传播。
+    # video_segments = {}
+    # next_obj_id = int(cfg["data"]["ann_obj_id"])
+    # track_count = 0
+    # merge_iou_thresh = selector_cfg.get("merge_iou_thresh", 0.8)
+    # for frame in best_frames:
+    #     obj_ids = list(range(next_obj_id, next_obj_id + len(frame.segmentations)))
+    #     masks = [seg.mask for seg in frame.segmentations]
+    #     tracked_segments = segmenter_and_tracker.track_from_masks(
+    #         video_dir=video_dir,
+    #         ann_frame_idx=frame.frame_idx,
+    #         obj_ids=obj_ids,
+    #         masks=masks,
+    #     )
+    #     merge_video_segments(video_segments, tracked_segments, iou_thresh=merge_iou_thresh)
+    #     next_obj_id += len(frame.segmentations)
+    #     track_count += len(frame.segmentations)
+
+    # if not video_segments:
+    #     print(f"[Skip] 未得到可用跟踪结果: {task.video_path}")
+    #     return
+
+    # print(
+    #     f"[Track] video={task.video_path} keyframes={len(best_frames)} "
+    #     f"tracks={track_count} tracked_frames={len(video_segments)}"
+    # )
 
     
-    save_tracking_results(video_dir=video_dir, video_segments=video_segments, out_dir=out_dir)
+    # save_tracking_results(video_dir=video_dir, video_segments=video_segments, out_dir=out_dir)
 
-    save_video_track_txt(video_segments=video_segments, txt_path=track_txt_path, score=1)
+    # save_video_track_txt(video_segments=video_segments, txt_path=track_txt_path, score=1)
 
-    print(f"[Done] 保存结果: {out_dir}")
-    print(f"[Done] 轨迹文件: {track_txt_path}")
+    # print(f"[Done] 保存结果: {out_dir}")
+    # print(f"[Done] 轨迹文件: {track_txt_path}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config.yaml", type=str)
-    parser.add_argument("--input_json", default="sht_json/input_datas_sht_original_scaled.json", type=str)
+    parser.add_argument("--input_json", default="input_json/input_datas_ucf.json", type=str)
     args = parser.parse_args()
 
     cfg = load_cfg(args.config)
+    dataset_target_config = get_dataset_target_config(cfg["data"]["dataset_name"])
     tasks = load_tasks(args.input_json)
     if not tasks:
         print(f"未读取到任务: {args.input_json}")
         return
+    print(
+        f"[Info] dataset={dataset_target_config.name} "
+        f"targets={len(dataset_target_config.target_desc.split('，'))}"
+    )
 
     detector = QwenVLDetector(
         model_path=cfg["qwen"]["model_path"],
-        target_desc=cfg["qwen"]["target_desc"],
+        target_desc=dataset_target_config.target_desc,
         max_new_tokens=cfg["qwen"]["max_new_tokens"],
         use_quantization=False,
         use_flashattn=True,
@@ -207,13 +385,17 @@ def main() -> None:
         multimask_output=cfg["sam2"]["multimask_output"],
         device=device,
     )
-
     for task in tasks:
         try:
-            run_single_video(detector, segmenter_and_tracker, task, cfg)
+            run_single_video(
+                detector,
+                segmenter_and_tracker,
+                task,
+                cfg,
+                dataset_target_config.target_desc,
+            )
         except Exception as e:
             print(f"[Error] {task.video_path}: {e}")
-
 
 if __name__ == "__main__":
     main()

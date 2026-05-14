@@ -1,13 +1,16 @@
 *.jpg
 *.png
 *.pt
+*.txt
 /checkpoints
 /logs
 /outputs
 /Qwen3-VL-8B-Instruct
+/gemma-4-26B-A4B-it
 /sht_json
 /test_videos
 /tracks
 *.whl
 *.pyc
 __pycache__
+*.json

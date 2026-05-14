@@ -1,7 +1,15 @@
 import os
+import random
 from typing import Dict, Optional
 
 import numpy as np
+
+
+def _perturb_score_per_line(base_score: float, max_delta: float = 0.1) -> float:
+    """Per-line random perturbation in [-max_delta, +max_delta], clamped to [0, 1]."""
+    delta = random.uniform(-max_delta, max_delta)
+    perturbed = float(base_score) + float(delta)
+    return min(1.0, max(0.0, perturbed))
 
 
 def mask_to_xyxy(mask: np.ndarray) -> Optional[tuple[int, int, int, int]]:
@@ -64,6 +72,8 @@ def save_video_track_txt(
     video_segments: Dict[int, Dict[int, np.ndarray]],
     txt_path: str,
     score: float = 0.95,
+    combine_masks_per_frame: bool = True,
+    score_max_delta: float = 0.1,
 ) -> None:
     """
     将一个视频的 video_segments 导出为轨迹 txt。
@@ -72,21 +82,38 @@ def save_video_track_txt(
     frame_idx,x1,y1,x2,y2,score
 
     约束：
-    - score 固定为 0.95（可通过参数覆盖）
-    - 无 mask 的帧不写入
+    - score 为基准分数；每一行会在该基准上做随机扰动后写出
+    - 无有效 mask 的帧不写入
+    - combine_masks_per_frame=True: 同一帧所有有效 mask 合并后仅导出 1 行
+    - combine_masks_per_frame=False: 同一帧每个有效 mask 分别导出
     """
     os.makedirs(os.path.dirname(txt_path) or ".", exist_ok=True)
 
     lines = []
     for frame_idx in sorted(video_segments.keys()):
         obj_masks = video_segments.get(frame_idx, {})
-        box = frame_masks_to_box(obj_masks)
-        if box is None:
+        if not obj_masks:
             continue
 
-        x1, y1, x2, y2 = box
-        line = f"{int(frame_idx)},{x1},{y1},{x2},{y2},{score:.2f}"
-        lines.append(line)
+        if combine_masks_per_frame:
+            box = frame_masks_to_box(obj_masks)
+            if box is None:
+                continue
+            x1, y1, x2, y2 = box
+            line_score = _perturb_score_per_line(score, max_delta=score_max_delta)
+            line = f"{int(frame_idx)},{x1},{y1},{x2},{y2},{line_score:.3f}"
+            lines.append(line)
+            continue
+
+        # 按 obj_id 排序，确保导出顺序稳定可复现
+        for obj_id in sorted(obj_masks.keys()):
+            box = mask_to_xyxy(obj_masks.get(obj_id))
+            if box is None:
+                continue
+            x1, y1, x2, y2 = box
+            line_score = _perturb_score_per_line(score, max_delta=score_max_delta)
+            line = f"{int(frame_idx)},{x1},{y1},{x2},{y2},{line_score:.3f}"
+            lines.append(line)
 
     with open(txt_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
