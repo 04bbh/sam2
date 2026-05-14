@@ -19,29 +19,7 @@ CONFIDENCE_THRESHOLD = 0.9
 MIN_CATEGORY_COUNT = 3
 RANGE_CONFIDENCE_THRESHOLD = 0.85
 
-FULL_VIDEO_RANGE_CATEGORIES = {
-    "骑自行车",
-    "骑摩托车",
-    "机动车",
-    "小推车",
-    "推车",
-    "垃圾推车",
-}
-ACTION_RANGE_CATEGORIES = {
-    "打斗",
-    "跳跃",
-    "抢夺",
-    "翻越栏杆",
-    "摔倒",
-    "奔跑",
-    "快速奔跑",
-    "追逐",
-    "挥舞物品",
-    "滑滑板",
-    "滑滑板的人",
-    "向上抛物品",
-    "捡起掉落的物品"
-}
+
 def confidence_value(detection: dict[str, Any]) -> float:
     try:
         return float(detection.get("confidence", 0.0))
@@ -215,6 +193,8 @@ def filter_json_data_multi_best(
     enable_temporal_localization: bool = True,
     enable_box_filter: bool = True,
     random_keyframe_seed: int = 0,
+    full_video_range_categories: set[str] | frozenset[str] | None = None,
+    action_range_categories: set[str] | frozenset[str] | None = None,
 ) -> list[dict[str, Any]]:
     if enable_box_filter:
         confidence_filtered = filter_low_confidence_blocks(data, threshold)
@@ -223,11 +203,18 @@ def filter_json_data_multi_best(
         filtered_multi_best = pick_global_best_single(data, random_keyframe_seed)
 
     if enable_temporal_localization:
+        if full_video_range_categories is None or action_range_categories is None:
+            raise ValueError(
+                "full_video_range_categories and action_range_categories are required "
+                "when temporal localization is enabled"
+            )
         category_ranges = compute_category_frame_ranges(
             original_blocks=data,
             selected_blocks=filtered_multi_best,
             video_last_frame_id=video_last_frame_id,
             range_threshold=range_threshold,
+            full_video_range_categories=full_video_range_categories,
+            action_range_categories=action_range_categories,
         )
         attach_category_ranges(filtered_multi_best, category_ranges)
     else:
@@ -300,6 +287,8 @@ def compute_category_frame_ranges(
     selected_blocks: list[dict[str, Any]],
     video_last_frame_id: int,
     range_threshold: float,
+    full_video_range_categories: set[str] | frozenset[str],
+    action_range_categories: set[str] | frozenset[str],
 ) -> dict[str, tuple[int, int]]:
     if not original_blocks or video_last_frame_id < 0:
         return {}
@@ -325,11 +314,11 @@ def compute_category_frame_ranges(
 
     category_ranges: dict[str, tuple[int, int]] = {}
     for category_name in selected_categories:
-        if category_name in FULL_VIDEO_RANGE_CATEGORIES:
+        if category_name in full_video_range_categories:
             category_ranges[category_name] = (0, video_last_frame_id)
             continue
 
-        if category_name not in ACTION_RANGE_CATEGORIES:
+        if category_name not in action_range_categories:
             continue
 
         hit_indices = category_hit_indices.get(category_name, [])

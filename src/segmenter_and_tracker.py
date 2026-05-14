@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Sequence
 import cv2
 import numpy as np
+import torch
 
 from sam2.build_sam import build_sam2, build_sam2_video_predictor
 from sam2.sam2_image_predictor import SAM2ImagePredictor
@@ -27,6 +28,9 @@ class SegmenterAndTracker:
         checkpoint: str,
         device: str = "cuda",
         multimask_output: bool = False,
+        offload_video_to_cpu: bool = True,
+        offload_state_to_cpu: bool = True,
+        async_loading_frames: bool = False,
     ) -> None:
         self.sam_model = build_sam2(config_file=model_cfg, ckpt_path=checkpoint, device=device)
         self.image_predictor = SAM2ImagePredictor(self.sam_model)
@@ -37,6 +41,9 @@ class SegmenterAndTracker:
         )
 
         self.multimask_output = multimask_output
+        self.offload_video_to_cpu = offload_video_to_cpu
+        self.offload_state_to_cpu = offload_state_to_cpu
+        self.async_loading_frames = async_loading_frames
 
     def segment(self, det: DetectionResult) -> SegmentationResult:
         return self.segment_many([det])[0]
@@ -146,51 +153,62 @@ class SegmenterAndTracker:
         if not masks:
             return {}
 
-        state = self.video_predictor.init_state(video_path=video_dir)
+        state = self.video_predictor.init_state(
+            video_path=video_dir,
+            offload_video_to_cpu=self.offload_video_to_cpu,
+            offload_state_to_cpu=self.offload_state_to_cpu,
+            async_loading_frames=self.async_loading_frames,
+        )
 
-        for obj_id, mask in zip(obj_ids, masks):
-            self.video_predictor.add_new_mask(
-                inference_state=state,
-                frame_idx=ann_frame_idx,
-                obj_id=int(obj_id),
-                mask=mask,
-            )
+        try:
+            for obj_id, mask in zip(obj_ids, masks):
+                self.video_predictor.add_new_mask(
+                    inference_state=state,
+                    frame_idx=ann_frame_idx,
+                    obj_id=int(obj_id),
+                    mask=mask,
+                )
 
-        video_segments: Dict[int, Dict[int, np.ndarray]] = {}
-        num_frames = state["num_frames"]
-        range_start = ann_frame_idx if start_frame_idx is None else int(start_frame_idx)
-        range_end = (num_frames - 1) if end_frame_idx is None else int(end_frame_idx)
-        range_start = max(0, range_start)
-        range_end = min(num_frames - 1, range_end)
-        if range_end < range_start:
+            video_segments: Dict[int, Dict[int, np.ndarray]] = {}
+            num_frames = state["num_frames"]
+            range_start = ann_frame_idx if start_frame_idx is None else int(start_frame_idx)
+            range_end = (num_frames - 1) if end_frame_idx is None else int(end_frame_idx)
+            range_start = max(0, range_start)
+            range_end = min(num_frames - 1, range_end)
+            if range_end < range_start:
+                return {}
+
+            forward_frames = max(0, range_end - ann_frame_idx)
+            backward_frames = max(0, ann_frame_idx - range_start)
+
+            for out_frame_idx, out_obj_ids, out_mask_logits in self.video_predictor.propagate_in_video(
+                state,
+                start_frame_idx=ann_frame_idx,
+                max_frame_num_to_track=forward_frames,
+                reverse=False,
+            ):
+                if out_frame_idx < range_start or out_frame_idx > range_end:
+                    continue
+                video_segments[out_frame_idx] = {
+                    out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy().squeeze().astype(np.uint8)
+                    for i, out_obj_id in enumerate(out_obj_ids)
+                }
+
+            for out_frame_idx, out_obj_ids, out_mask_logits in self.video_predictor.propagate_in_video(
+                state,
+                start_frame_idx=ann_frame_idx,
+                max_frame_num_to_track=backward_frames,
+                reverse=True,
+            ):
+                if out_frame_idx < range_start or out_frame_idx > range_end:
+                    continue
+                video_segments[out_frame_idx] = {
+                    out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy().squeeze().astype(np.uint8)
+                    for i, out_obj_id in enumerate(out_obj_ids)
+                }
+
+            return video_segments
+        finally:
             self.video_predictor.reset_state(state)
-            return {}
-
-        for out_frame_idx, out_obj_ids, out_mask_logits in self.video_predictor.propagate_in_video(
-            state,
-            start_frame_idx=ann_frame_idx,
-            max_frame_num_to_track=num_frames,
-            reverse=False,
-        ):
-            if out_frame_idx < range_start or out_frame_idx > range_end:
-                continue
-            video_segments[out_frame_idx] = {
-                out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy().squeeze().astype(np.uint8)
-                for i, out_obj_id in enumerate(out_obj_ids)
-            }
-
-        for out_frame_idx, out_obj_ids, out_mask_logits in self.video_predictor.propagate_in_video(
-            state,
-            start_frame_idx=ann_frame_idx,
-            max_frame_num_to_track=num_frames,
-            reverse=True,
-        ):
-            if out_frame_idx < range_start or out_frame_idx > range_end:
-                continue
-            video_segments[out_frame_idx] = {
-                out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy().squeeze().astype(np.uint8)
-                for i, out_obj_id in enumerate(out_obj_ids)
-            }
-
-        self.video_predictor.reset_state(state)
-        return video_segments
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()

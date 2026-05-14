@@ -12,10 +12,10 @@ from typing import Any
 
 
 DEFAULT_INPUT_DIR = Path(
-    "output_json_detector/detector_stage2_json_chaserunmove_delchaseclass"
+    "/data/users/wjq/codes/sam2-main/output_json_detector_sht_new/detector_stage2_json_1"
 )
 DEFAULT_OUTPUT_DIR = Path(
-    "output_json_detector/detector_stage2_json_chaserunmove_delchaseclass_filtered"
+    "/data/users/wjq/codes/sam2-main/output_json_detector_sht_new/detector_stage2_json_1_filtered"
 )
 CONFIDENCE_THRESHOLD = 0.9
 MIN_CATEGORY_COUNT = 3

@@ -7,10 +7,11 @@ import argparse
 import json
 import os
 from pathlib import Path
-os.environ["CUDA_VISIBLE_DEVICES"] = "1,2,3,0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 import torch
 import yaml
 
+from src.dataset_target_config import DatasetTargetConfig, get_dataset_target_config
 from src.detector_json_filter import (
     CONFIDENCE_THRESHOLD,
     MIN_CATEGORY_COUNT,
@@ -22,7 +23,7 @@ from utils.mask_to_box_track import save_video_track_txt
 from utils.visualization import save_tracking_results
 
 
-device = "cuda:0" if torch.cuda.is_available() else "cpu"
+device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 def load_cfg(path: str) -> dict:
@@ -41,7 +42,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--input-json-dir",
         type=Path,
-        default="./output_json_detector/detector_json_original",
+        default="./output_detector_json/output_json_detector_ucf/detector_stage2_json_3",
         help="Directory containing detector JSON files. Defaults to data.detector_stage2_json_root.",
     )
     parser.add_argument(
@@ -83,7 +84,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--range-threshold",
         type=float,
-        default=0.80,
+        default=0.85,
         help=(
             "Confidence threshold used only for category start/end frame range "
             f"calculation. Default: {RANGE_CONFIDENCE_THRESHOLD}"
@@ -192,6 +193,7 @@ def run_single_json(
     sam_iou_keyframe_selection: bool,
     random_keyframe_seed: int,
     save_filtered: bool,
+    dataset_target_config: DatasetTargetConfig,
 ) -> None:
     video_name = json_path.stem
     videos_root = cfg["data"]["videos_root"]
@@ -222,6 +224,8 @@ def run_single_json(
         enable_temporal_localization=temporal_localization,
         enable_box_filter=box_filter,
         random_keyframe_seed=random_keyframe_seed,
+        full_video_range_categories=dataset_target_config.full_video_range_categories,
+        action_range_categories=dataset_target_config.action_range_categories,
     )
 
     if save_filtered:
@@ -268,6 +272,7 @@ def run_single_json(
 def main() -> None:
     args = parse_args()
     cfg = load_cfg(args.config)
+    dataset_target_config = get_dataset_target_config(cfg["data"]["dataset_name"])
 
     input_json_dir = args.input_json_dir
     if input_json_dir is None:
@@ -281,11 +286,21 @@ def main() -> None:
     if not json_paths:
         raise FileNotFoundError(f"No JSON files found in: {input_json_dir}")
 
+    print(
+        f"[Info] dataset={dataset_target_config.name} "
+        f"targets={len(dataset_target_config.target_desc.split('，'))} "
+        f"full_video_categories={len(dataset_target_config.full_video_range_categories)} "
+        f"action_categories={len(dataset_target_config.action_range_categories)}"
+    )
+
     segmenter_and_tracker = JsonSegmenterAndTracker(
         model_cfg=cfg["sam2"]["model_cfg"],
         checkpoint=cfg["sam2"]["checkpoint"],
         multimask_output=cfg["sam2"]["multimask_output"],
         device=device,
+        offload_video_to_cpu=bool(cfg["sam2"].get("offload_video_to_cpu", True)),
+        offload_state_to_cpu=bool(cfg["sam2"].get("offload_state_to_cpu", True)),
+        async_loading_frames=bool(cfg["sam2"].get("async_loading_frames", False)),
     )
 
     for json_path in json_paths:
@@ -303,6 +318,7 @@ def main() -> None:
                 sam_iou_keyframe_selection=args.sam_iou_keyframe_selection,
                 random_keyframe_seed=args.random_keyframe_seed,
                 save_filtered=args.save_filtered_json,
+                dataset_target_config=dataset_target_config,
             )
         except Exception as exc:
             print(f"[Error] {json_path.name}: {exc}")

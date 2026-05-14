@@ -2,7 +2,7 @@ import argparse
 import json
 import math
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "2,3,0,1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2,3"
 
 from dataclasses import dataclass
 from typing import Dict, List
@@ -12,6 +12,7 @@ import numpy as np
 import yaml
 
 from utils.mask_to_box_track import save_video_track_txt
+from src.dataset_target_config import get_dataset_target_config
 from src.detector import QwenVLDetector
 from src.segmenter_and_tracker import SegmenterAndTracker
 from src.selector import FrameSelector
@@ -64,7 +65,7 @@ def list_frames(video_dir: str) -> List[str]:
         for p in os.listdir(video_dir)
         if os.path.splitext(p)[-1].lower() in [".jpg", ".jpeg", ".png"]
     ]
-    names.sort()
+    names.sort(key=lambda n: int(os.path.splitext(n)[0]))
     return [os.path.join(video_dir, n) for n in names]
 
 
@@ -201,18 +202,19 @@ def run_single_video(
     segmenter_and_tracker: SegmenterAndTracker,
     task: VideoTask,
     cfg: dict,
+    target_desc: str,
 ) -> None:
     videos_root = cfg["data"]["videos_root"]
     video_dir = os.path.join(videos_root, task.video_path)
-    out_dir = os.path.join(cfg["data"]["output_root"], task.video_path)
-    track_txt_path = os.path.join(cfg["data"]["track_txt_root"], os.path.basename(video_dir) + ".txt")
+    out_vis = os.path.join(cfg["data"]["detector_stage2_vis_root"], task.video_path)
+    out_json = os.path.join(cfg["data"]["detector_stage2_json_root"], os.path.basename(video_dir) + ".json")
 
 
     if not os.path.isdir(video_dir):
         print(f"[Skip] 视频目录不存在: {video_dir}")
         return
-    if os.path.isdir(out_dir) and os.path.isfile(track_txt_path):
-        print(f"[Skip] 输出目录和轨迹文件已存在: {out_dir} {track_txt_path}")
+    if os.path.isdir(out_vis) and os.path.isfile(out_json):
+        print(f"[Skip] 检测可视化结果和json文件已存在: {out_vis} {out_json}")
         return
 
     frame_paths = list_frames(video_dir)
@@ -231,7 +233,7 @@ def run_single_video(
     candidate_indices = pick_candidate_indices(
         total_frames=len(frame_paths),
         score_indices=score_indices,
-        stride=5,
+        stride=int(cfg.get("data", {}).get("candidate_stride", 5)),
     )
 
     if not candidate_indices:
@@ -244,11 +246,11 @@ def run_single_video(
         f"candidate_frames={len(candidate_indices)}"
     )
 
-    # 单阶段检测：直接使用配置中的 target_desc 做 batch 定位。
+    # 单阶段检测：使用 dataset_name 对应的 target_desc 做 batch 定位。
     batch_size = int(cfg["pipeline"]["batch_size"])
     seg_results = []
     det_count = 0
-    stage2_target_desc = cfg["qwen"]["target_desc"]
+    stage2_target_desc = target_desc
     visualize_stage2 = cfg.get("pipeline", {}).get("visualize_detector", True)
     detector_stage2_vis_root = cfg.get("data", {}).get(
         "detector_stage2_vis_root",
@@ -353,18 +355,23 @@ def run_single_video(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config.yaml", type=str)
-    parser.add_argument("--input_json", default="sht_json/input_datas_sht_original_scaled.json", type=str)
+    parser.add_argument("--input_json", default="input_json/input_datas_ucf.json", type=str)
     args = parser.parse_args()
 
     cfg = load_cfg(args.config)
+    dataset_target_config = get_dataset_target_config(cfg["data"]["dataset_name"])
     tasks = load_tasks(args.input_json)
     if not tasks:
         print(f"未读取到任务: {args.input_json}")
         return
+    print(
+        f"[Info] dataset={dataset_target_config.name} "
+        f"targets={len(dataset_target_config.target_desc.split('，'))}"
+    )
 
     detector = QwenVLDetector(
         model_path=cfg["qwen"]["model_path"],
-        target_desc=cfg["qwen"]["target_desc"],
+        target_desc=dataset_target_config.target_desc,
         max_new_tokens=cfg["qwen"]["max_new_tokens"],
         use_quantization=False,
         use_flashattn=True,
@@ -380,7 +387,13 @@ def main() -> None:
     )
     for task in tasks:
         try:
-            run_single_video(detector, segmenter_and_tracker, task, cfg)
+            run_single_video(
+                detector,
+                segmenter_and_tracker,
+                task,
+                cfg,
+                dataset_target_config.target_desc,
+            )
         except Exception as e:
             print(f"[Error] {task.video_path}: {e}")
 

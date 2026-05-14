@@ -1,6 +1,7 @@
 *.jpg
 *.png
 *.pt
+*.txt
 /checkpoints
 /logs
 /outputs
@@ -9,7 +10,6 @@
 /sht_json
 /test_videos
 /tracks
-/output_json_detector
 *.whl
 *.pyc
 __pycache__
