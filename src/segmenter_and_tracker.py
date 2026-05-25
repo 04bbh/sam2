@@ -161,6 +161,35 @@ class SegmenterAndTracker:
         )
 
         try:
+            return self._track_from_masks_with_state(
+                state=state,
+                ann_frame_idx=ann_frame_idx,
+                obj_ids=obj_ids,
+                masks=masks,
+                start_frame_idx=start_frame_idx,
+                end_frame_idx=end_frame_idx,
+            )
+        finally:
+            self.video_predictor.reset_state(state)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    def _track_from_masks_with_state(
+        self,
+        state: dict,
+        ann_frame_idx: int,
+        obj_ids: Sequence[int],
+        masks: Sequence[np.ndarray],
+        start_frame_idx: int | None = None,
+        end_frame_idx: int | None = None,
+    ) -> Dict[int, Dict[int, np.ndarray]]:
+        if len(obj_ids) != len(masks):
+            raise ValueError("obj_ids 与 masks 长度不一致")
+        if not masks:
+            return {}
+
+        self.video_predictor.reset_state(state)
+        try:
             for obj_id, mask in zip(obj_ids, masks):
                 self.video_predictor.add_new_mask(
                     inference_state=state,
@@ -210,5 +239,3 @@ class SegmenterAndTracker:
             return video_segments
         finally:
             self.video_predictor.reset_state(state)
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()

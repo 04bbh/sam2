@@ -5,6 +5,7 @@ import random
 from typing import Any, Dict, List
 
 import numpy as np
+import torch
 
 from src.detector import DetectionResult
 from src.segmenter_and_tracker import SegmentationResult, SegmenterAndTracker
@@ -268,6 +269,7 @@ class JsonSegmenterAndTracker(SegmenterAndTracker):
 
         video_segments: Dict[int, Dict[int, np.ndarray]] = {}
         next_obj_id = int(start_obj_id)
+        track_requests = []
 
         for frame_idx in sorted(grouped):
             frame_items = grouped[frame_idx]
@@ -281,11 +283,25 @@ class JsonSegmenterAndTracker(SegmenterAndTracker):
                 if range_end is not None and int(seg.frame_idx) > int(range_end):
                     continue
 
-                tracked_segments = self.track_from_masks(
-                    video_dir=video_dir,
+                track_requests.append((frame_idx, next_obj_id, seg.mask, range_start, range_end))
+                next_obj_id += 1
+
+        if not track_requests:
+            return {}
+
+        state = self.video_predictor.init_state(
+            video_path=video_dir,
+            offload_video_to_cpu=self.offload_video_to_cpu,
+            offload_state_to_cpu=self.offload_state_to_cpu,
+            async_loading_frames=self.async_loading_frames,
+        )
+        try:
+            for frame_idx, obj_id, mask, range_start, range_end in track_requests:
+                tracked_segments = self._track_from_masks_with_state(
+                    state=state,
                     ann_frame_idx=frame_idx,
-                    obj_ids=[next_obj_id],
-                    masks=[seg.mask],
+                    obj_ids=[obj_id],
+                    masks=[mask],
                     start_frame_idx=range_start,
                     end_frame_idx=range_end,
                 )
@@ -294,7 +310,10 @@ class JsonSegmenterAndTracker(SegmenterAndTracker):
                     source=tracked_segments,
                     iou_thresh=merge_iou_thresh,
                 )
-                next_obj_id += 1
+        finally:
+            self.video_predictor.reset_state(state)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         return video_segments
 
