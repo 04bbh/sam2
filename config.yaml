@@ -23,24 +23,25 @@ selector:
   merge_iou_thresh: 0.8
 
 candidate_selector:
-  high_ratio: 0.6
-  mid_ratio: 0.3
+  high_ratio: 0.3
+  mid_ratio: 0.1
   low_ratio: 0.1
   uniform_interval: 0
 
 pipeline:
-  batch_size: 8
+  batch_size: 4
   queue_size: 32
   visualize_detector: true
 
 data:
   dataset_name: "ucf"
   candidate_stride: 8     #sht：5  ubn:2   ucf：8
+  video_desc_root: ""
   videos_root: "/data/users/wjq/datasets/UCF-Crime/frames"
   # "/data/users/wjq/datasets/shanghaitech/testing/frames"
-  output_root: "./output_vis/output_loc_ucf/improved_3_0.9_bs8"
-  track_txt_root: "./output_tracks/output_tracks_ucf/improved_3_0.9_bs8"
-  detector_stage2_vis_root: "./output_vis/output_loc_ucf/detector_stage2_vis_3"
-  detector_stage2_json_root: "./output_detector_json/output_json_detector_ucf/detector_stage2_json_3"
+  output_root: "./output_vis/output_loc_ucf/improved_2"
+  track_txt_root: "./output_tracks/output_tracks_ucf/improved_2"
+  detector_stage2_vis_root: "./output_vis/output_loc_ucf/detector_stage2_vis_10"
+  detector_stage2_json_root: "./output_detector_json/output_json_detector_ucf/detector_stage2_json_10" 
   ann_obj_id: 1
   

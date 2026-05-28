@@ -1,0 +1,49 @@
+runtime:
+  cuda_visible_devices: "3"
+
+sam2:
+  model_cfg: "configs/sam2.1/sam2.1_hiera_l.yaml"
+  checkpoint: "./checkpoints/sam2.1_hiera_large.pt"
+  multimask_output: false
+  offload_video_to_cpu: true
+  offload_state_to_cpu: true
+  async_loading_frames: false
+
+data:
+  dataset_name: "ucf"
+  candidate_stride: 8
+  videos_root: "/data/users/wjq/datasets/UCF-Crime/frames"
+  detector_json_root: "./output_detector_json/output_json_detector_ucf/detector_stage2_json_1"
+  input_json: "./input_json/input_datas_ucf.json"
+  output_root: "./output_vis/output_loc_ucf/new_framework_3"
+  track_txt_root: "./output_tracks/output_tracks_ucf/new_framework_3"
+  ann_obj_id: 1
+  frame_score_window_size: 2
+
+category_presence:
+  top_k: 3
+  threshold: 0.91
+  padded_value: 0.0
+
+object_scoring:
+  sam_conf_threshold: 0.85
+  det_conf_weight: 0.8
+  frame_score_weight: 0.1
+  sam_iou_weight: 0.1
+
+temporal_proposal:
+  alpha: 0.8
+  category_response_weight: 0.9
+  frame_score_weight: 0.1
+  start_margin_sampled_frames: 3
+  end_margin_sampled_frames: 3
+
+tracking:
+  merge_iou_thresh: 0.8
+  save_scored_json: false
+  scored_json_root: "./output_detector_json/output_json_detector_xd/fusion_scored_json"
+
+
+#sht_original:40791
+#sht_new:141650
+#ubnormal:92640

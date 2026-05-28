@@ -71,9 +71,24 @@ class QwenVLDetector:
             self.model = self.model.to(self.device)
         # self.model.eval()
 
-    def _build_prompt(self, batch_size: int, target_desc: str | None = None) -> str:
+    def _build_prompt(
+        self,
+        batch_size: int,
+        target_desc: str | None = None,
+        video_context: str | None = None,
+    ) -> str:
         if target_desc is None:
             target_desc = self.target_desc
+        video_context = video_context.strip() if isinstance(video_context, str) else ""
+        video_context_block = ""
+        if video_context:
+            video_context_block = f"""
+        # Video-level Temporal Context
+        下面是一段由完整视频生成的客观时序描述。它只用于补充单帧图像缺失的动作过程和对象交互信息，不是检测标签，也不是答案。
+        
+        {video_context}
+        """
+            
         user_prompt = """
         # Role
         你是一个高精度的视觉目标检测系统，需要对多张来自同一视频的图像进行目标定位。
@@ -90,21 +105,24 @@ class QwenVLDetector:
         指目标的空间位置坐标。坐标使用 0-1000 的标准化整数，顺序为[x_min,y_min,x_max,y_max]。
 
         ## confidence
-        指目标检测与定位的置信度分数。评分规则如下：
-        - 0.90-1.00：目标类别明确，关键视觉证据清晰完整，定位准确。
-        - 0.40-0.60：目标疑似存在，但关键证据不足。
-        注意：置信度分数只能在0.40-0.60或0.90-1.00范围之内；检测和定位结果越可靠，分数越高。
-    
+        confidence 是类别正确性与定位准确性的综合评分。
+        - 0.90-1.00：目标类别明确，关键视觉证据清晰完整，box紧密覆盖完整目标。
+        - 0.80-0.89：目标类别明确，box基本准确，但存在轻微遮挡、模糊、边界偏差或背景冗余。
+        - 0.60-0.79：目标疑似存在，但关键证据不足，或box不够准确。
+        - 0.40-0.59：目标疑似存在，但关键证据不足且box不够准确。
+        - <0.40：目标不存在，不要输出。
+        若类别不确定或box无法可靠确定，优先输出 []，不要猜测。
 
         
         # Detection Categories（不同目标类别用“，”分隔）
         {target_desc}
-        
+
 
         # Output Rules
         * 每个图像中最多检测2个目标，每个目标的输出包含"category"、"box"、"confidence"。
         * 若目标不存在或不确定，优先输出 []，不要猜测。
         * 必须包含 image_id 从 0 到 {batch_size}-1 的所有项
+        * 不要因为Video-level Temporal Context提到某种动作过程，就在当前图像中猜测不可见目标。
 
         
         # Output Format
@@ -225,7 +243,11 @@ class QwenVLDetector:
         # - 0.2-0.5：不确定是否存在Detection Categories中定义的目标
         # - 0.0-0.2：不存在Detection Categories中定义的类别
 
-        return user_prompt.format(batch_size=batch_size, target_desc=target_desc)
+        return user_prompt.format(
+            batch_size=batch_size,
+            target_desc=target_desc,
+            video_context_block=video_context_block,
+        )
 
     @staticmethod
     def _denorm_xyxy(box_1000: np.ndarray, width: int, height: int) -> np.ndarray:
@@ -249,6 +271,7 @@ class QwenVLDetector:
         frame_paths: Sequence[str],
         frame_indices: Sequence[int],
         target_desc: str | Sequence[str] | None = None,
+        video_context: str | None = None,
     ) -> List[DetectionResult]:
         if not frame_paths:
             return []
@@ -270,7 +293,14 @@ class QwenVLDetector:
             content.append({"type": "image", "image": img})
         
         # 加入具体的检测指令
-        content.append({"type": "text", "text": self._build_prompt(batch_size=len(images), target_desc=target_desc)})
+        content.append({
+            "type": "text",
+            "text": self._build_prompt(
+                batch_size=len(images),
+                target_desc=target_desc,
+                video_context=video_context,
+            ),
+        })
 
         messages = [
             {

@@ -42,7 +42,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--input-json-dir",
         type=Path,
-        default="./output_detector_json/output_json_detector_ucf/detector_stage2_json_3",
+        default="./output_detector_json/output_json_detector_xd/detector_stage2_json_2",
         help="Directory containing detector JSON files. Defaults to data.detector_stage2_json_root.",
     )
     parser.add_argument(
@@ -54,7 +54,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--save-filtered-json",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help="Save filtered JSON files. Enabled by default.",
     )
     parser.add_argument(

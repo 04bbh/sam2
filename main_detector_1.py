@@ -59,6 +59,35 @@ def load_tasks(json_path: str) -> List[VideoTask]:
     return tasks
 
 
+def load_video_context(video_desc_root: str, video_path: str) -> str:
+    if not video_desc_root:
+        return ""
+
+    desc_path = os.path.join(video_desc_root, os.path.basename(video_path) + ".json")
+    if not os.path.isfile(desc_path):
+        print(f"[Info] 未找到视频描述: {desc_path}")
+        return ""
+
+    try:
+        with open(desc_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        print(f"[Info] 视频描述读取失败: {desc_path} ({e})")
+        return ""
+
+    video_desc = data.get("video_desc", {})
+    if not isinstance(video_desc, dict):
+        print(f"[Info] 视频描述字段无效: {desc_path}")
+        return ""
+
+    video_context = video_desc.get("video_context", "")
+    if not isinstance(video_context, str) or not video_context.strip():
+        print(f"[Info] 视频描述为空: {desc_path}")
+        return ""
+
+    return video_context.strip()
+
+
 def list_frames(video_dir: str) -> List[str]:
     names = [
         p
@@ -262,12 +291,23 @@ def run_single_video(
         "./outputs/detector_stage2_json",
     )
     detector_stage2_json_path = os.path.join(detector_stage2_json_root, task.video_path + ".json")
+    video_context = load_video_context(
+        cfg.get("data", {}).get("video_desc_root", ""),
+        task.video_path,
+    )
+    if video_context:
+        print(f"[Info] 已加载视频描述: {task.video_path}")
     all_det_results = []
 
     for st in range(0, len(candidate_indices), batch_size):
         batch_indices = candidate_indices[st: st + batch_size]
         batch_paths = [frame_paths[i] for i in batch_indices]
-        det_batch = detector.infer_batch(batch_paths, batch_indices, target_desc=stage2_target_desc)
+        det_batch = detector.infer_batch(
+            batch_paths,
+            batch_indices,
+            target_desc=stage2_target_desc,
+            video_context=video_context,
+        )
         all_det_results.extend(det_batch)
         det_count += len(det_batch)
         if visualize_stage2:
@@ -282,74 +322,7 @@ def run_single_video(
     )
     print(f"[Done] 检测 JSON: {detector_stage2_json_path}")
 
-    # if not seg_results:
-    #     print(f"[Skip] 未得到可用分割结果: {task.video_path}")
-    #     return
-
-    # valid_seg_count = sum(1 for seg in seg_results if not (seg.box_xyxy == 0).all())
-    # print(
-    #     f"[Detect] video={task.video_path} detections={det_count} "
-    #     f"segmentations={len(seg_results)} valid_segmentations={valid_seg_count}"
-    # )
-
-    # # 在候选帧中筛选关键帧
-    # selector_cfg = cfg["selector"]
-    # selector = FrameSelector(
-    #     alpha=selector_cfg["alpha"],
-    #     beta=selector_cfg["beta"],
-    #     min_score=selector_cfg.get("min_score", 0.6),
-    #     count_bonus=selector_cfg.get("count_bonus", 0.03),
-    #     max_targets_per_frame=selector_cfg.get("max_targets_per_frame", 3),
-    #     min_frame_gap=selector_cfg.get("min_frame_gap", 30),
-    # )
-    # top_k_frames = int(selector_cfg.get("top_k_frames", 3))
-    # best_frames = selector.select_top_frames(seg_results, top_k=top_k_frames)
-    # if not best_frames:
-    #     print(f"[Skip] 关键帧得分均低于阈值: {task.video_path}")
-    #     return
-
-    # for rank, frame in enumerate(best_frames, start=1):
-    #     print(
-    #         f"[Best-{rank}] video={task.video_path} frame_idx={frame.frame_idx} "
-    #         f"score={frame.score:.4f} targets={len(frame.segmentations)} "
-    #         f"(avg_qwen_conf={frame.confidence:.4f}, avg_sam_iou={frame.iou_score:.4f})"
-    #         f"segmentations={frame.segmentations}"
-    #     )
-
-    # # 同一个关键帧里的多个目标一次性加入同一个 SAM2 state，再统一传播。
-    # video_segments = {}
-    # next_obj_id = int(cfg["data"]["ann_obj_id"])
-    # track_count = 0
-    # merge_iou_thresh = selector_cfg.get("merge_iou_thresh", 0.8)
-    # for frame in best_frames:
-    #     obj_ids = list(range(next_obj_id, next_obj_id + len(frame.segmentations)))
-    #     masks = [seg.mask for seg in frame.segmentations]
-    #     tracked_segments = segmenter_and_tracker.track_from_masks(
-    #         video_dir=video_dir,
-    #         ann_frame_idx=frame.frame_idx,
-    #         obj_ids=obj_ids,
-    #         masks=masks,
-    #     )
-    #     merge_video_segments(video_segments, tracked_segments, iou_thresh=merge_iou_thresh)
-    #     next_obj_id += len(frame.segmentations)
-    #     track_count += len(frame.segmentations)
-
-    # if not video_segments:
-    #     print(f"[Skip] 未得到可用跟踪结果: {task.video_path}")
-    #     return
-
-    # print(
-    #     f"[Track] video={task.video_path} keyframes={len(best_frames)} "
-    #     f"tracks={track_count} tracked_frames={len(video_segments)}"
-    # )
-
-    
-    # save_tracking_results(video_dir=video_dir, video_segments=video_segments, out_dir=out_dir)
-
-    # save_video_track_txt(video_segments=video_segments, txt_path=track_txt_path, score=1)
-
-    # print(f"[Done] 保存结果: {out_dir}")
-    # print(f"[Done] 轨迹文件: {track_txt_path}")
+  
 
 
 def main() -> None:
