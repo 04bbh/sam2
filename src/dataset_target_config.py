@@ -15,7 +15,7 @@ class DatasetTargetConfig:
 
 SHT_ORIGINAL_TARGET_DESC = (
     "打斗，骑自行车，骑摩托车，机动车，跳远，抢夺，小推车，翻越栏杆，摔倒，"
-    "向上抛掷物品，滑滑板，快速奔跑，挥舞长棍"
+    "向上抛物品，滑滑板，快速奔跑，挥舞长棍"
 )
 
 SHT_NEW_TARGET_DESC = (
@@ -60,6 +60,7 @@ DEFAULT_ACTION_RANGE_CATEGORIES = frozenset(
         "滑滑板",
         "滑滑板的人",
         "向上抛掷物品",
+        "向上抛物品",
         "捡起掉落的物品",
 
     }

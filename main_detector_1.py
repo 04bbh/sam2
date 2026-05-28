@@ -328,7 +328,7 @@ def run_single_video(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config.yaml", type=str)
-    parser.add_argument("--input_json", default="input_json/input_datas_xd.json", type=str)
+    parser.add_argument("--input_json", default="input_json/input_datas_ucf.json", type=str)
     args = parser.parse_args()
 
     cfg = load_cfg(args.config)
